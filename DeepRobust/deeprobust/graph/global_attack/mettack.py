@@ -18,7 +18,7 @@ from deeprobust.graph.global_attack import BaseAttack
 
 
 class BaseMeta(BaseAttack):
-    """Abstract base class for meta attack. Adversarial Attacks on Graph Neural
+    """元攻击抽象基类. Adversarial Attacks on Graph Neural
     Networks via Meta Learning, ICLR 2019,
     https://openreview.net/pdf?id=Bylnx209YX
 
@@ -83,8 +83,7 @@ class BaseMeta(BaseAttack):
 
     def filter_potential_singletons(self, modified_adj):
         """
-        Computes a mask for entries potentially leading to singleton nodes, i.e. one of the two nodes corresponding to
-        the entry have degree 1 and there is an edge between the two nodes.
+        计算可能导致单节点的条目掩码，即对应于条目的两个节点之一的度为1，并且这两个节点之间有一条边。
         """
 
         degrees = modified_adj.sum(0)
@@ -106,10 +105,9 @@ class BaseMeta(BaseAttack):
 
     def log_likelihood_constraint(self, modified_adj, ori_adj, ll_cutoff):
         """
-        Computes a mask for entries that, if the edge corresponding to the entry is added/removed, would lead to the
-        log likelihood constraint to be violated.
+        计算导致对数似然约束被违反的条目的掩码。
 
-        Note that different data type (float, double) can effect the final results.
+        注意，不同的数据类型（float、double）可能会影响最终结果。
         """
         t_d_min = torch.tensor(2.0).to(self.device)
         if self.undirected:

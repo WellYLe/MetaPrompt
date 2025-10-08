@@ -36,7 +36,7 @@ torch.manual_seed(args.seed)
 if device != 'cpu':
     torch.cuda.manual_seed(args.seed)
 
-data = Dataset(root='/tmp/', name=args.dataset, setting='nettack')
+data = Dataset(root='C:/Users/11326/Desktop/MetaPrompt/DeepRobust/examples/graph/tmp/', name=args.dataset, setting='nettack')
 adj, features, labels = data.adj, data.features, data.labels
 idx_train, idx_val, idx_test = data.idx_train, data.idx_val, data.idx_test
 idx_unlabeled = np.union1d(idx_val, idx_test)
@@ -94,6 +94,7 @@ def main():
     test(adj)
     modified_adj = model.modified_adj
     # modified_features = model.modified_features
+    print('=== testing GCN on modified graph ===')
     test(modified_adj)
 
     # # if you want to save the modified adj/features, uncomment the code below
