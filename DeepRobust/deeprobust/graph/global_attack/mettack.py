@@ -588,6 +588,32 @@ class MetaEvasion(BaseMeta):
         # 保证 adj_changes 可求梯度（父类已创建 Parameter）
         if attack_structure:
             self.adj_changes.requires_grad = True
+    # ----- helper: get k-hop subgraph -----
+    def k_hop_subgraph(adj_matrix, seed_nodes, k=2, undirected=True):
+        """
+        adj_matrix: scipy sparse or torch tensor (dense) adjacency (on CPU)
+        seed_nodes: list or 1D np array of node indices (int)
+        sub_nodes (np.array), node_map (dict old->new)
+        """
+        import collections
+        if sp.issparse(adj_matrix):
+            A = adj_matrix.tocsr()
+        else:
+        # ensure numpy adjacency for neighborhood traversal
+            A = sp.csr_matrix(adj_matrix.cpu().numpy()) if isinstance(adj_matrix, torch.Tensor) else sp.csr_matrix(adj_matrix)
+        visited = set(seed_nodes)
+        frontier = set(seed_nodes)
+        for _ in range(k):
+            next_front = set()
+            for u in frontier:
+                row = A.getrow(u).indices
+                next_front.update(row)
+            new = next_front - visited
+            visited |= next_front
+            frontier = new
+        sub_nodes = np.array(sorted(list(visited)), dtype=int)
+        node_map = {int(n): i for i, n in enumerate(sub_nodes)}
+        return sub_nodes, node_map
 
     def get_modified_adj_tensor(self, ori_adj):
         # 与父类 get_modified_adj 类似，但返回 tensor 用于前向
@@ -662,59 +688,122 @@ class MetaEvasion(BaseMeta):
 
         return adj_grad
 
-    def attack(self, ori_features, ori_adj, labels, idx_attack, n_perturbations, targeted=False, target_labels=None, ll_constraint=True, ll_cutoff=0.004):
+    def attack(self, ori_features, ori_adj, labels, idx_attack, n_perturbations, k_hop=2, targeted=False, target_labels=None, ll_constraint=True, ll_cutoff=0.004):
         """
-        ori_features, ori_adj, labels: like before (labels 可以是 None)
-        idx_attack: 待攻击节点索引（可以是单个 int 或一组）
-        n_perturbations: total # of edge flips to perform
-        targeted: 是否目标攻击（若 True，需要传入 target_labels）
-        target_labels: 若 targeted=True，传入目标标签数组（与 idx_attack 对应）
+        使用 k-hop 子图来做攻击，每次只在目标节点的子图上选择一条边翻转。
         """
+        # 确保原始在 CPU（用于子图抽取），也保持 ori_adj 的稀疏形式
+        # ori_adj, ori_features, labels 已通过 utils.to_tensor 前置（你可按需要调整）
         self.sparse_features = sp.issparse(ori_features)
-        ori_adj, ori_features, labels = utils.to_tensor(ori_adj, ori_features, labels, device=self.device)
-        modified_adj = ori_adj.clone().detach()
+        ori_adj_tensor, ori_features_tensor, labels = utils.to_tensor(ori_adj, ori_features, labels, device=self.device)
+        # 但是用于子图提取需要 CPU/sparse 形式：
+        ori_adj_cpu = ori_adj if sp.issparse(ori_adj) else sp.csr_matrix(ori_adj.cpu().numpy())
 
-        # 保证 adj_changes 从 0 开始
-        self.adj_changes.data.fill_(0.0)
-        # 将 idx_attack 转 tensor
-        if isinstance(idx_attack, (list, np.ndarray)):
-            idx_attack = torch.LongTensor(idx_attack).to(self.device)
+        # 确保 adj_changes 存在于 CPU 并初始化（全图 CPU 存储）
+        if not hasattr(self, 'adj_changes') or self.adj_changes is None:
+            self.adj_changes = Parameter(torch.zeros(self.nnodes, self.nnodes), requires_grad=False)
+            self.adj_changes.data.fill_(0.0)
+            self.adj_changes.data = self.adj_changes.data.to('cpu')  # keep on CPU
         else:
-            idx_attack = torch.LongTensor([int(idx_attack)]).to(self.device)
+            # 若已存在，确保搬到 CPU，避免后续 NumPy 转换报错
+            self.adj_changes.data = self.adj_changes.data.detach().cpu()
 
-        for i in range(n_perturbations):
-            # 每一步基于当前 modified_adj 计算梯度（单步近似）
-            modified_adj = self.get_modified_adj(ori_adj)  # 使用父类方法，保证符号一致
-            # 前向并取梯度
-            adj_grad = self.get_evasion_grad(ori_features, modified_adj, idx_attack, target_labels=target_labels, targeted=targeted)
+        # 将 idx_attack 标准化为列表
+        if isinstance(idx_attack, (int, np.integer)):
+            idx_list = [int(idx_attack)]
+        else:
+            idx_list = list(idx_attack)
 
-            if adj_grad is None:
-                break
+        # 对每个攻击步骤，先选一个 target node（可以使用轮换或随机）
+        for step in range(n_perturbations):
+            # 这里我们轮流攻击 idx_list 中的节点，或随机选择一个
+            tgt = idx_list[step % len(idx_list)]
+            # 抽取子图节点与 node_map
+            sub_nodes, node_map = MetaEvasion.k_hop_subgraph(ori_adj_cpu, [tgt], k=k_hop, undirected=self.undirected)
+            n_sub = len(sub_nodes)
+            if n_sub <= 1:
+                continue
 
-            # 把梯度转成 score（和原算法里 adj_meta_grad 类似的处理）
-            # 参考 get_adj_score 中的 (-2*modified_adj + 1) 变换
-            modified_adj_tensor = modified_adj
-            adj_meta_grad = adj_grad * (-2 * modified_adj_tensor + 1)
-            adj_meta_grad = adj_meta_grad - adj_meta_grad.min()
-            adj_meta_grad = adj_meta_grad - torch.diag(torch.diag(adj_meta_grad))
-            # filter singleton & ll_constraint 同用原函数
-            singleton_mask = self.filter_potential_singletons(modified_adj_tensor)
-            adj_meta_grad = adj_meta_grad * singleton_mask
-            if ll_constraint:
-                allowed_mask, _ = self.log_likelihood_constraint(modified_adj_tensor, ori_adj, ll_cutoff)
-                allowed_mask = allowed_mask.to(self.device)
-                adj_meta_grad = adj_meta_grad * allowed_mask
+            # 构建子图的邻接/feature（把子图数据放到设备）
+            # ori_adj_cpu is sparse CSR -> get submatrix
+            rows = sub_nodes
+            cols = sub_nodes
+            adj_sub = ori_adj_cpu[rows][:, cols]  # still sparse
+            # convert to dense torch on device (n_sub small)
+            adj_sub_dense = torch.FloatTensor(adj_sub.toarray()).to(self.device)
+            if sp.issparse(ori_features):
+                feat_sub = ori_features.tocsr()[rows].toarray()
+                feat_sub = torch.FloatTensor(feat_sub).to(self.device)
+            else:
+                feat_sub = ori_features[rows].to(self.device)
 
-            # pick best entry to flip
-            flat_max = torch.argmax(adj_meta_grad)
-            row_idx, col_idx = utils.unravel_index(flat_max, ori_adj.shape)
-            # apply discrete flip to adj_changes: 与原代码一致的更新方向
-            self.adj_changes.data[row_idx][col_idx] += (-2 * modified_adj_tensor[row_idx][col_idx] + 1)
+            # 创建子图层面的 adj_changes_sub（在 GPU 上）
+            adj_changes_sub = torch.zeros((n_sub, n_sub), device=self.device, requires_grad=True)
+            # 注意：如果你想保留以前翻转的效果，需要把全局 adj_changes 的相关 entries 映射到这里并初始化
+            # global flips -> transfer
+            global_changes_slice = self.adj_changes.data[sub_nodes[:, None], sub_nodes]  # on CPU
+            if torch.is_tensor(global_changes_slice):
+                adj_changes_sub.data = global_changes_slice.to(self.device)
+
+            # modified_adj_sub = adj_sub_dense + adj_changes_sub
+            modified_adj_sub = torch.clamp(adj_changes_sub - torch.diag(torch.diag(adj_changes_sub)), -1, 1)
             if self.undirected:
-                self.adj_changes.data[col_idx][row_idx] += (-2 * modified_adj_tensor[row_idx][col_idx] + 1)
+                modified_adj_sub = modified_adj_sub + modified_adj_sub.t()
+            modified_adj_sub = modified_adj_sub + adj_sub_dense
 
-        # 最终输出
+            # 前向得到 loss（与 get_evasion_grad 类似，但只在子图上）
+            adj_norm_sub = utils.normalize_adj_tensor(modified_adj_sub)
+            out = self.surrogate(feat_sub, adj_norm_sub)  # logits
+            logp = F.log_softmax(out, dim=1)
+
+            # determine labels for nodes in subgraph
+            if target_labels is None:
+                pseudo = logp.argmax(dim=1)
+                orig_label = pseudo[node_map[tgt]]
+            else:
+                orig_label = target_labels[tgt]
+
+            loss = F.nll_loss(logp[node_map[tgt]].unsqueeze(0), orig_label.unsqueeze(0)) if isinstance(orig_label, torch.Tensor) else F.nll_loss(logp[node_map[tgt]].unsqueeze(0), torch.LongTensor([int(orig_label)]).to(self.device))
+
+            # 计算 adj_changes_sub 的梯度
+            adj_grad_sub = torch.autograd.grad(loss, adj_changes_sub, retain_graph=False, allow_unused=True)[0]
+            if adj_grad_sub is None:
+                continue
+
+            # 得到局部 adj_meta_grad（用 same transform）
+            adj_meta_grad_sub = adj_grad_sub * (-2 * modified_adj_sub + 1)
+            adj_meta_grad_sub = adj_meta_grad_sub - adj_meta_grad_sub.min()
+            adj_meta_grad_sub = adj_meta_grad_sub - torch.diag(torch.diag(adj_meta_grad_sub))
+
+            # 过滤单节点（在子图尺度上）
+            # 这里可以调用同样的 filter_potential_singletons 但要把输入换成子图形式
+            # 简化：直接禁止自环（对角）并只选择上三角
+            adj_meta_grad_sub = torch.triu(adj_meta_grad_sub, diagonal=1)
+
+            # pick best local edge to flip
+            flat_idx = torch.argmax(adj_meta_grad_sub)
+            local_row = (flat_idx // n_sub).item()
+            local_col = (flat_idx % n_sub).item()
+            u = int(sub_nodes[local_row])
+            v = int(sub_nodes[local_col])
+
+            # apply this flip to global adj_changes (which is on CPU)
+            # delta = (-2 * modified_adj_sub[local_row, local_col] + 1)
+            # note: read modified_adj_sub value, move to cpu scalar
+            delta = float((-2 * modified_adj_sub[local_row, local_col] + 1).detach().cpu().item())
+            # update CPU global adj_changes
+            self.adj_changes.data[u, v] += delta
+            if self.undirected:
+                self.adj_changes.data[v, u] += delta
+
+            # optional: free GPU memory for this loop
+            del adj_changes_sub, adj_grad_sub, adj_meta_grad_sub, modified_adj_sub, adj_norm_sub, out, logp
+            torch.cuda.empty_cache()
+
+        # after loop, produce full modified_adj if needed (but keep it on CPU or produce small dense if required)
         if self.attack_structure:
-            self.modified_adj = self.get_modified_adj(ori_adj).detach()
-        if self.attack_features:
-            self.modified_features = self.get_modified_features(ori_features).detach()
+            # you can compute modified_adj_cpu = ori_adj_cpu + self.adj_changes.data (both on CPU)
+            # or convert to sparse flips list for downstream
+            # convert to NumPy on CPU explicitly to avoid CUDA→NumPy error
+            self.modified_adj = (ori_adj_cpu + sp.csr_matrix(self.adj_changes.detach().cpu().numpy())).astype(float)
+
