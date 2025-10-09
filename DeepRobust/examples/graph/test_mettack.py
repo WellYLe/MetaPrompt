@@ -1,9 +1,18 @@
+import os
+import sys
 import torch
 import numpy as np
 import torch.nn.functional as F
 import torch.optim as optim
+"""
+确保导入本地 DeepRobust 软件包（而不是站点软件包）。
+"""
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 from deeprobust.graph.defense import GCN
 from deeprobust.graph.global_attack import MetaApprox, Metattack
+from deeprobust.graph.global_attack.mettack import MetaEvasion
 from deeprobust.graph.utils import *
 from deeprobust.graph.data import Dataset
 import argparse
@@ -25,7 +34,7 @@ parser.add_argument('--dropout', type=float, default=0.5,
 parser.add_argument('--dataset', type=str, default='citeseer', choices=['cora', 'cora_ml', 'citeseer', 'polblogs', 'pubmed'], help='dataset')
 parser.add_argument('--ptb_rate', type=float, default=0.05,  help='pertubation rate')
 parser.add_argument('--model', type=str, default='Meta-Self',
-        choices=['Meta-Self', 'A-Meta-Self', 'Meta-Train', 'A-Meta-Train'], help='model variant')
+        choices=['Meta-Self', 'A-Meta-Self', 'Meta-Train', 'A-Meta-Train', 'Meta-Evasion'], help='model variant')
 
 args = parser.parse_args()
 
@@ -61,7 +70,9 @@ if 'Both' in args.model:
 
 if 'A' in args.model:
     model = MetaApprox(model=surrogate, nnodes=adj.shape[0], feature_shape=features.shape, attack_structure=True, attack_features=False, device=device, lambda_=lambda_)
-
+    
+if 'Evasion' in args.model:
+    model = MetaEvasion(model=surrogate, nnodes=adj.shape[0], feature_shape=features.shape,  attack_structure=True, attack_features=False, device=device, lambda_=lambda_)
 else:
     model = Metattack(model=surrogate, nnodes=adj.shape[0], feature_shape=features.shape,  attack_structure=True, attack_features=False, device=device, lambda_=lambda_)
 

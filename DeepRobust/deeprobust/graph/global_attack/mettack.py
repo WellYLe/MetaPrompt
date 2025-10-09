@@ -568,3 +568,153 @@ class MetaApprox(BaseMeta):
             self.modified_adj = self.get_modified_adj(ori_adj).detach()
         if self.attack_features:
             self.modified_features = self.get_modified_features(ori_features).detach()
+class MetaEvasion(BaseMeta):
+    """
+    Evasion-style attack: do NOT retrain surrogate. Compute gradients
+    w.r.t adj_changes via a single forward/backward pass on the (modified) graph.
+    适合测试时逃逸攻击（no training set access）。
+    参数含义与父类一致。
+
+    usage:
+      attacker = MetaEvasion(surrogate, nnodes=..., attack_structure=True, device='cpu')
+      # 若不知道真实标签，idx_attack为待攻击节点索引
+      attacker.attack(features, adj, labels, idx_attack, n_perturbations=10, targeted=False)
+      modified_adj = attacker.modified_adj
+    """
+    def __init__(self, model, nnodes, feature_shape=None, attack_structure=True, attack_features=False, undirected=True, device='cpu', lr=0.01):
+        super(MetaEvasion, self).__init__(model, nnodes, feature_shape, lambda_=0.5, attack_structure=attack_structure, attack_features=attack_features, undirected=undirected, device=device)
+        # lr 用于在 adj_changes 上做小步更新（梯度上升）
+        self.lr = lr
+        # 保证 adj_changes 可求梯度（父类已创建 Parameter）
+        if attack_structure:
+            self.adj_changes.requires_grad = True
+
+    def get_modified_adj_tensor(self, ori_adj):
+        # 与父类 get_modified_adj 类似，但返回 tensor 用于前向
+        adj_changes_square = self.adj_changes - torch.diag(torch.diag(self.adj_changes))
+        if self.undirected:
+            adj_changes_square = adj_changes_square + adj_changes_square.t()
+        adj_changes_square = torch.clamp(adj_changes_square, -1, 1)
+        modified_adj = adj_changes_square + ori_adj
+        return modified_adj
+
+    def get_evasion_grad(self, features, modified_adj, target_idx, target_labels=None, targeted=False, loss_type='ce'):
+        """
+        计算单次前向下 adj_changes 的梯度。
+        - target_idx: 要攻击的节点索引（array-like）
+        - target_labels: 若已知真实标签，传入真实标签；若为 None，则使用 surrogate 的预测 label 作为 pseudo-label（untargeted场景）
+        - targeted: 若 True 执行有目标攻击（想让模型预测为给定 label）；若 False 则 untargeted（想改变 / 降低对原类置信度）
+        - loss_type: 'ce' 或 'entropy' 等（目前实现 ce 和 confidence）
+        返回：adj_grad (和 feature_grad 如果需要)
+        """
+        # 准备输入
+        adj_norm = utils.normalize_adj_tensor(modified_adj)
+        # 前向：采用 surrogate 的 forward（假设 surrogate 存在 .forward 接受 features, adj_norm）
+        # 这里直接调用 self.surrogate.output 风格或 surrogate.forward
+        # 为通用，尝试 self.surrogate.output first, else call surrogate.forward
+        self.surrogate.eval()
+        for p in self.surrogate.parameters():
+            p.requires_grad = False
+
+        # compute hidden/output in surrogate style; try to use existing interface:
+        try:
+            output = self.surrogate.output  # 如果在外部已经有 output buffer（不常见）
+            # 如果 output 存在，但可能是上次训练的，需要重新前向:
+            # fallback to forward below
+            raise Exception()
+        except Exception:
+            # 一般 surrogate 有 forward(features, adj) 或 fit/forward 实现
+            # 为最小依赖，尝试 self.surrogate.predict_logits 或直接 call model
+            # 大多数实现：model(features, adj_norm)
+            output = self.surrogate(features, adj_norm)  # 假设返回 logits
+            if output.dim() == 2:
+                logp = F.log_softmax(output, dim=1)
+            else:
+                logp = F.log_softmax(output, dim=1)
+
+        # 若没有 target_labels，使用 pseudo-labels（当前预测）
+        if target_labels is None:
+            pseudo = logp.argmax(dim=1)
+            orig_labels = pseudo[target_idx]
+        else:
+            orig_labels = target_labels[target_idx]
+
+        # 构造损失：
+        if targeted:
+            # 若 targeted，目标 label 应由 target_labels 提供（或由外部指定）
+            loss = F.nll_loss(logp[target_idx], orig_labels)
+            # 对 targeted 攻击，想最大化目标类概率 -> 最小化负 log prob，等同于最小化 nll_loss
+            # but we'll perform gradient ascent on adj_changes to increase target prob
+        else:
+            # untargeted: 我们想降低模型对原类别的置信度 —— maximize loss
+            loss = F.nll_loss(logp[target_idx], orig_labels)
+            # 对 adj_changes 做梯度上升以增大该 loss (从而降低原类置信度)
+
+        # compute gradient wrt adj_changes
+        if self.attack_structure:
+            if self.adj_changes.grad is not None:
+                self.adj_changes.grad.zero_()
+            # ensure adj_changes participates in computation graph: modified_adj depends on adj_changes
+            # We used modified_adj earlier; ensure it was computed from self.adj_changes
+            adj_grad = torch.autograd.grad(loss, self.adj_changes, retain_graph=False, allow_unused=True)[0]
+        else:
+            adj_grad = None
+
+        return adj_grad
+
+    def attack(self, ori_features, ori_adj, labels, idx_attack, n_perturbations, targeted=False, target_labels=None, ll_constraint=True, ll_cutoff=0.004):
+        """
+        ori_features, ori_adj, labels: like before (labels 可以是 None)
+        idx_attack: 待攻击节点索引（可以是单个 int 或一组）
+        n_perturbations: total # of edge flips to perform
+        targeted: 是否目标攻击（若 True，需要传入 target_labels）
+        target_labels: 若 targeted=True，传入目标标签数组（与 idx_attack 对应）
+        """
+        self.sparse_features = sp.issparse(ori_features)
+        ori_adj, ori_features, labels = utils.to_tensor(ori_adj, ori_features, labels, device=self.device)
+        modified_adj = ori_adj.clone().detach()
+
+        # 保证 adj_changes 从 0 开始
+        self.adj_changes.data.fill_(0.0)
+        # 将 idx_attack 转 tensor
+        if isinstance(idx_attack, (list, np.ndarray)):
+            idx_attack = torch.LongTensor(idx_attack).to(self.device)
+        else:
+            idx_attack = torch.LongTensor([int(idx_attack)]).to(self.device)
+
+        for i in range(n_perturbations):
+            # 每一步基于当前 modified_adj 计算梯度（单步近似）
+            modified_adj = self.get_modified_adj(ori_adj)  # 使用父类方法，保证符号一致
+            # 前向并取梯度
+            adj_grad = self.get_evasion_grad(ori_features, modified_adj, idx_attack, target_labels=target_labels, targeted=targeted)
+
+            if adj_grad is None:
+                break
+
+            # 把梯度转成 score（和原算法里 adj_meta_grad 类似的处理）
+            # 参考 get_adj_score 中的 (-2*modified_adj + 1) 变换
+            modified_adj_tensor = modified_adj
+            adj_meta_grad = adj_grad * (-2 * modified_adj_tensor + 1)
+            adj_meta_grad = adj_meta_grad - adj_meta_grad.min()
+            adj_meta_grad = adj_meta_grad - torch.diag(torch.diag(adj_meta_grad))
+            # filter singleton & ll_constraint 同用原函数
+            singleton_mask = self.filter_potential_singletons(modified_adj_tensor)
+            adj_meta_grad = adj_meta_grad * singleton_mask
+            if ll_constraint:
+                allowed_mask, _ = self.log_likelihood_constraint(modified_adj_tensor, ori_adj, ll_cutoff)
+                allowed_mask = allowed_mask.to(self.device)
+                adj_meta_grad = adj_meta_grad * allowed_mask
+
+            # pick best entry to flip
+            flat_max = torch.argmax(adj_meta_grad)
+            row_idx, col_idx = utils.unravel_index(flat_max, ori_adj.shape)
+            # apply discrete flip to adj_changes: 与原代码一致的更新方向
+            self.adj_changes.data[row_idx][col_idx] += (-2 * modified_adj_tensor[row_idx][col_idx] + 1)
+            if self.undirected:
+                self.adj_changes.data[col_idx][row_idx] += (-2 * modified_adj_tensor[row_idx][col_idx] + 1)
+
+        # 最终输出
+        if self.attack_structure:
+            self.modified_adj = self.get_modified_adj(ori_adj).detach()
+        if self.attack_features:
+            self.modified_features = self.get_modified_features(ori_features).detach()
