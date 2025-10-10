@@ -16,6 +16,8 @@ from tqdm import tqdm
 from deeprobust.graph import utils
 from deeprobust.graph.global_attack import BaseAttack
 import sys
+from torch_geometric.utils import degree
+
 
 class BaseMeta(BaseAttack):
     """元攻击抽象基类. Adversarial Attacks on Graph Neural
@@ -823,6 +825,9 @@ class MetaEva(BaseMeta):
         """
         对每个节点计算综合评分，包括相似度、连接度、OOD度。
         """
+        # 统一设备，避免后续 scatter/indexing 的设备不一致问题
+        adj = adj.to(device)
+        x = x.to(device)
         edge_index = adj.nonzero(as_tuple=False).t()  # 获取边索引
         num_nodes = x.size(0)
 
@@ -832,12 +837,13 @@ class MetaEva(BaseMeta):
         row, col = edge_index
         c = torch.zeros(num_nodes, 1, device=device)
         c = c.scatter_add_(0, col.unsqueeze(1), e)
-        deg = degree(col, num_nodes, dtype=x.dtype, device=device).unsqueeze(-1)
+        # PyG 的 degree 不支持 device 关键字参数，返回张量设备随 index 而定，这里显式迁移到目标设备
+        deg = degree(col, num_nodes, dtype=x.dtype).unsqueeze(-1).to(device)
         csim = c / deg.clamp(min=1)  # 每个节点的平均相似度
         csim = csim.squeeze()
 
         # ============ 连接度评分 ============
-        deg = degree(col, num_nodes, dtype=x.dtype, device=device)
+        deg = degree(col, num_nodes, dtype=x.dtype).to(device)
         norm_deg = (deg - deg.min()) / (deg.max() - deg.min() + 1e-8)  # 归一化
 
         # ============ OOD评分（举例：可以基于节点特征的偏离程度） ============
