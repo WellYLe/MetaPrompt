@@ -120,7 +120,7 @@ class BaseMeta(BaseAttack):
                                                                     ll_cutoff, undirected=self.undirected)
         return allowed_mask, current_ratio
 
-    def get_adj_score(self, adj_grad, modified_adj, ori_adj, ll_constraint, ll_cutoff):
+    def get_adj_score(self, adj_grad, modified_adj, ori_adj, ll_constraint, ll_cutoff, node_loss_weight=None):
         adj_meta_grad = adj_grad * (-2 * modified_adj + 1)
         # Make sure that the minimum entry is 0.
         adj_meta_grad = adj_meta_grad - adj_meta_grad.min()
@@ -129,6 +129,19 @@ class BaseMeta(BaseAttack):
         # # Set entries to 0 that could lead to singleton nodes.
         singleton_mask = self.filter_potential_singletons(modified_adj)
         adj_meta_grad = adj_meta_grad *  singleton_mask
+
+        # Optional: weight scores by per-node loss, mapping node loss to edge pair weight
+        if node_loss_weight is not None:
+            # Normalize to [0,1] to keep scale reasonable
+            nlw = node_loss_weight
+            nlw = nlw - nlw.min()
+            denom = nlw.max() + 1e-12
+            nlw = nlw / denom if denom > 0 else nlw
+            # Build pair weight: average of endpoint weights
+            pair_weight = (nlw.view(-1, 1) + nlw.view(1, -1)) * 0.5
+            adj_meta_grad = adj_meta_grad * pair_weight
+            # Ensure self-loops stay zero
+            adj_meta_grad = adj_meta_grad - torch.diag(torch.diag(adj_meta_grad, 0))
 
         if ll_constraint:
             allowed_mask, self.ll_ratio = self.log_likelihood_constraint(modified_adj, ori_adj, ll_cutoff)
@@ -302,7 +315,18 @@ class Metattack(BaseMeta):
             adj_grad = torch.autograd.grad(attack_loss, self.adj_changes, retain_graph=True)[0]
         if self.attack_features:
             feature_grad = torch.autograd.grad(attack_loss, self.feature_changes, retain_graph=True)[0]
-        return adj_grad, feature_grad
+        # Build per-node loss (no reduction) and combine per lambda_
+        N = output.shape[0]
+        node_loss_weight = torch.zeros(N, device=self.device)
+        # Per-node losses
+        if idx_train is not None and len(idx_train) > 0:
+            loss_vec_train = F.nll_loss(output[idx_train], labels[idx_train], reduction='none')
+            node_loss_weight[idx_train] = self.lambda_ * loss_vec_train if self.lambda_ != 0 else 0
+        if idx_unlabeled is not None and len(idx_unlabeled) > 0:
+            loss_vec_unlab = F.nll_loss(output[idx_unlabeled], labels_self_training[idx_unlabeled], reduction='none')
+            node_loss_weight[idx_unlabeled] = (1 - self.lambda_) * loss_vec_unlab if self.lambda_ != 1 else 0
+
+        return adj_grad, feature_grad, node_loss_weight
 
     def attack(self, ori_features, ori_adj, labels, idx_train, idx_unlabeled, n_perturbations, ll_constraint=True, ll_cutoff=0.004):
         """Generate n_perturbations on the input graph.
@@ -348,12 +372,12 @@ class Metattack(BaseMeta):
             adj_norm = utils.normalize_adj_tensor(modified_adj)
             self.inner_train(modified_features, adj_norm, idx_train, idx_unlabeled, labels)
 
-            adj_grad, feature_grad = self.get_meta_grad(modified_features, adj_norm, idx_train, idx_unlabeled, labels, labels_self_training)
+            adj_grad, feature_grad, node_loss_weight = self.get_meta_grad(modified_features, adj_norm, idx_train, idx_unlabeled, labels, labels_self_training)
 
             adj_meta_score = torch.tensor(0.0).to(self.device)
             feature_meta_score = torch.tensor(0.0).to(self.device)
             if self.attack_structure:
-                adj_meta_score = self.get_adj_score(adj_grad, modified_adj, ori_adj, ll_constraint, ll_cutoff)
+                adj_meta_score = self.get_adj_score(adj_grad, modified_adj, ori_adj, ll_constraint, ll_cutoff, node_loss_weight=node_loss_weight)
             if self.attack_features:
                 feature_meta_score = self.get_feature_score(feature_grad, modified_features)
 
@@ -795,6 +819,56 @@ class MetaEva(BaseMeta):
         print('GCN acc on unlabled data: {}'.format(acc_test_val))
         # 返回一下用于 debug 的值
         #return attack_loss.item()
+    def get_node_scores(self, adj, x, device):
+        """
+        对每个节点计算综合评分，包括相似度、连接度、OOD度。
+        """
+        edge_index = adj.nonzero(as_tuple=False).t()  # 获取边索引
+        num_nodes = x.size(0)
+
+        # ============ 相似度评分 ============
+        x_norm = x / torch.norm(x, p=2, dim=1, keepdim=True).clamp(min=1e-8)
+        e = torch.sum(x_norm[edge_index[0]] * x_norm[edge_index[1]], dim=1).unsqueeze(-1)  # 每条边的cosine相似度
+        row, col = edge_index
+        c = torch.zeros(num_nodes, 1, device=device)
+        c = c.scatter_add_(0, col.unsqueeze(1), e)
+        deg = degree(col, num_nodes, dtype=x.dtype, device=device).unsqueeze(-1)
+        csim = c / deg.clamp(min=1)  # 每个节点的平均相似度
+        csim = csim.squeeze()
+
+        # ============ 连接度评分 ============
+        deg = degree(col, num_nodes, dtype=x.dtype, device=device)
+        norm_deg = (deg - deg.min()) / (deg.max() - deg.min() + 1e-8)  # 归一化
+
+        # ============ OOD评分（举例：可以基于节点特征的偏离程度） ============
+        # 简单实现：用节点与全局特征均值的欧式距离
+        mean_feat = x.mean(dim=0, keepdim=True)
+        dist = torch.norm(x - mean_feat, p=2, dim=1)
+        norm_dist = (dist - dist.min()) / (dist.max() - dist.min() + 1e-8)
+
+        # ============ 综合加权 ============
+        w_sim, w_deg, w_ood = 0.4, 0.3, 0.3  # 可调整权重
+        node_score = w_sim * csim + w_deg * (1 - norm_deg) + w_ood * norm_dist  # 注意，度高的节点通常更“安全”，所以取1 - norm_deg
+
+        return node_score
+    def map_node_to_adj_score(self, node_scores, adj, ori_adj, ll_constraint, ll_cutoff):
+        """
+        将节点分数映射为邻接矩阵得分。
+        通常边的得分 = 节点分数之和 / 2。
+        """
+        num_nodes = node_scores.size(0)
+        adj_meta_score = torch.zeros_like(adj)
+
+        row, col = adj.nonzero(as_tuple=True)
+        edge_scores = (node_scores[row] + node_scores[col]) / 2.0
+        adj_meta_score[row, col] = edge_scores
+
+        # 根据原有约束处理（ll_constraint）
+        if ll_constraint:
+            mask = utils.likelihood_ratio_filter(ori_adj, adj_meta_score, ll_cutoff)
+            adj_meta_score = adj_meta_score * mask  
+
+        return adj_meta_score
 
     def attack(self, ori_features, ori_adj, labels, idx_train, idx_unlabeled, n_perturbations, ll_constraint=True, ll_cutoff=0.004):
         """Generate n_perturbations on the input graph.
@@ -845,6 +919,7 @@ class MetaEva(BaseMeta):
             feature_meta_score = torch.tensor(0.0).to(self.device)#特征矩阵梯度评分
 
             if self.attack_structure:
+                adj_meta_score = self.get_node_scores(modified_adj,modified_features, device=self.device)
                 adj_meta_score = self.get_adj_score(self.adj_grad_sum, modified_adj, ori_adj, ll_constraint, ll_cutoff)
             if self.attack_features:
                 feature_meta_score = self.get_feature_score(self.feature_grad_sum, modified_features)
