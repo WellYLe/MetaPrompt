@@ -12,7 +12,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 from deeprobust.graph.defense import GCN
 from deeprobust.graph.global_attack import MetaApprox, Metattack
-from deeprobust.graph.global_attack.mettack import MetaEvasion
+from deeprobust.graph.global_attack.mettack import MetaEva
 from deeprobust.graph.utils import *
 from deeprobust.graph.data import Dataset
 import argparse
@@ -34,20 +34,20 @@ parser.add_argument('--dropout', type=float, default=0.5,
 parser.add_argument('--dataset', type=str, default='citeseer', choices=['cora', 'cora_ml', 'citeseer', 'polblogs', 'pubmed'], help='dataset')
 parser.add_argument('--ptb_rate', type=float, default=0.05,  help='pertubation rate')
 parser.add_argument('--model', type=str, default='Meta-Self',
-        choices=['Meta-Self', 'A-Meta-Self', 'Meta-Train', 'A-Meta-Train', 'Meta-Evasion-Self'], help='model variant')
+        choices=['Meta-Self', 'A-Meta-Self', 'Meta-Train', 'A-Meta-Train', 'E-Meta-Self'], help='model variant')
 
 args = parser.parse_args()
 
 # Respect --no-cuda flag; default to CPU for stability on Meta attacks
 use_cuda = torch.cuda.is_available() and not args.no_cuda
 device = torch.device("cuda:0" if use_cuda else "cpu")
-
+#super(MetaEva, self).__init__(...)
 np.random.seed(args.seed)
 torch.manual_seed(args.seed)
 if device != 'cpu':
     torch.cuda.manual_seed(args.seed)
 
-data = Dataset(root='C:/Users/11326/Desktop/MetaPrompt/DeepRobust/examples/graph/tmp/', name=args.dataset, setting='nettack')
+data = Dataset(root='/tmp/', name=args.dataset, setting='nettack')
 adj, features, labels = data.adj, data.features, data.labels
 idx_train, idx_val, idx_test = data.idx_train, data.idx_val, data.idx_test
 idx_unlabeled = np.union1d(idx_val, idx_test)
@@ -73,8 +73,8 @@ if 'Both' in args.model:
 if 'A' in args.model:
     model = MetaApprox(model=surrogate, nnodes=adj.shape[0], feature_shape=features.shape, attack_structure=True, attack_features=False, device=device, lambda_=lambda_)
     
-if 'Evasion' in args.model:
-    model = MetaEvasion(model=surrogate, nnodes=adj.shape[0], feature_shape=features.shape,  attack_structure=True, attack_features=False, device=device)
+if 'E' in args.model:
+    model = MetaEva(model=surrogate, nnodes=adj.shape[0], feature_shape=features.shape,  attack_structure=True, attack_features=False, device=device)
 else:
     model = Metattack(model=surrogate, nnodes=adj.shape[0], feature_shape=features.shape,  attack_structure=True, attack_features=False, device=device, lambda_=lambda_)
 
@@ -103,11 +103,11 @@ def test(adj):
 
 def main():
     # MetaEvasion 的接口与 Metattack 不同：需要传入目标节点和整数 n_perturbations
-    if isinstance(model, MetaEvasion):
-        target_nodes = idx_unlabeled
-        model.attack(features, adj, labels, target_nodes, n_perturbations=perturbations, targeted=False)
-    else:
-        model.attack(features, adj, labels, idx_train, idx_unlabeled, perturbations, ll_constraint=False)
+    # if isinstance(model, MetaEva):
+    #     target_nodes = idx_unlabeled
+    #     model.attack(features, adj, labels, target_nodes, n_perturbations=perturbations, targeted=False)
+    # else:
+    model.attack(features, adj, labels, idx_train, idx_unlabeled, perturbations, ll_constraint=False)
     print('=== testing GCN on original(clean) graph ===')
     test(adj)
     modified_adj = model.modified_adj

@@ -3,7 +3,7 @@ import numpy as np
 import torch.nn.functional as F
 import torch.optim as optim
 from deeprobust.graph.defense import GCN
-from deeprobust.graph.global_attack import MetaApprox, Metattack
+from deeprobust.graph.global_attack import MetaApprox, Metattack, MetaEva
 from deeprobust.graph.utils import *
 from deeprobust.graph.data import Dataset
 import argparse

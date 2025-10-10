@@ -3,7 +3,7 @@ from .gcn_preprocess import GCNSVD, GCNJaccard
 from .r_gcn import RGCN, GGCL_F, GGCL_D
 from .prognn import ProGNN
 from .simpgcn import SimPGCN
-from .node_embedding import Node2Vec, DeepWalk
+# from .node_embedding import Node2Vec, DeepWalk
 import warnings
 try:
     from .gat import GAT
@@ -19,4 +19,4 @@ except ImportError as e:
 
 __all__ = ['GCN', 'GCNSVD', 'GCNJaccard', 'RGCN', 'ProGNN',
            'GraphConvolution', 'GGCL_F', 'GGCL_D', 'GAT', 'MedianGCN',
-           'ChebNet', 'SGC', 'SimPGCN', 'Node2Vec', 'DeepWalk']
+           'ChebNet', 'SGC', 'SimPGCN']  # 'Node2Vec', 'DeepWalk'
