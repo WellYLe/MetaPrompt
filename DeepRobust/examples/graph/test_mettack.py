@@ -60,7 +60,7 @@ surrogate = GCN(nfeat=features.shape[1], nclass=labels.max().item()+1, nhid=16,
         dropout=0.5, with_relu=False, with_bias=True, weight_decay=5e-4, device=device)
 
 surrogate = surrogate.to(device)
-surrogate.fit(features, adj, labels, idx_train)
+surrogate.fit(features, adj, labels, idx_train, idx_val, patience=30)
 
 # Setup Attack Model
 if 'Self' in args.model:
