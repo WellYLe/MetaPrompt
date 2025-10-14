@@ -116,8 +116,8 @@ def main():
     test(modified_adj)
 
     # 如果要保存修改后的属性/功能，取消下面的代码注释
-    # model.save_adj(root='./', name=f'mod_adj')
-    # model.save_features(root='./', name='mod_features')
+    model.save_adj(root='./', name=f'mod_adj')
+    model.save_features(root='./', name='mod_features')
 
 if __name__ == '__main__':
     main()
