@@ -12,7 +12,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 from deeprobust.graph.defense import GCN
 from deeprobust.graph.global_attack import MetaApprox, Metattack
-from deeprobust.graph.global_attack.mettack import MetaEva
+#from deeprobust.graph.global_attack.mettack import MetaEva
 from deeprobust.graph.utils import *
 from deeprobust.graph.data import Dataset
 import argparse
@@ -73,8 +73,8 @@ if 'Both' in args.model:
 if 'A' in args.model:
     model = MetaApprox(model=surrogate, nnodes=adj.shape[0], feature_shape=features.shape, attack_structure=True, attack_features=False, device=device, lambda_=lambda_)
     
-if 'E' in args.model:
-    model = MetaEva(model=surrogate, nnodes=adj.shape[0], feature_shape=features.shape,  attack_structure=True, attack_features=False, device=device)
+# if 'E' in args.model:
+#     model = MetaEva(model=surrogate, nnodes=adj.shape[0], feature_shape=features.shape,  attack_structure=True, attack_features=False, device=device)
 else:
     model = Metattack(model=surrogate, nnodes=adj.shape[0], feature_shape=features.shape,  attack_structure=True, attack_features=False, device=device, lambda_=lambda_)
 
@@ -115,7 +115,7 @@ def main():
     print('=== testing GCN on modified graph ===')
     test(modified_adj)
 
-    # # if you want to save the modified adj/features, uncomment the code below
+    # 如果要保存修改后的属性/功能，取消下面的代码注释
     # model.save_adj(root='./', name=f'mod_adj')
     # model.save_features(root='./', name='mod_features')
 
