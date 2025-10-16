@@ -60,3 +60,4 @@ np.savez('cora_modified_095.npz',
          idx_val=idx_val,
          idx_test=idx_test)
 print('保存完成: cora_modified.npz')
+print('111')
