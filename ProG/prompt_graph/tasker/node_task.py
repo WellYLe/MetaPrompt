@@ -1,6 +1,5 @@
 import torch
 from torch_geometric.loader import DataLoader
-from torch_geometric.transforms import SVDFeatureReduction
 from prompt_graph.utils import constraint,  center_embedding, Gprompt_tuning_loss
 from prompt_graph.evaluation import GPPTEva, GNNNodeEva, GPFEva, MultiGpromptEva
 from prompt_graph.pretrain import GraphPrePrompt, NodePrePrompt, prompt_pretrain_sample
@@ -16,41 +15,28 @@ from prompt_graph.utils import process
 warnings.filterwarnings("ignore")
 
 class NodeTask(BaseTask):
-      def __init__(self, data=None, input_dim=None, output_dim=None, task_num = 5, graphs_list = None, *args, **kwargs):
+      def __init__(self, data, input_dim, output_dim, task_num = 5, graphs_list = None, *args, **kwargs):
             super().__init__(*args, **kwargs)
             self.task_type = 'NodeTask'
             self.task_num = task_num  # 增加task_num的参数，控制重复数量，默认为5
             if self.prompt_type == 'MultiGprompt':
                   self.load_multigprompt_data()
             else:
-                  if data is None:
-                        # 如果没有提供data，则加载数据
-                        self.data, self.input_dim, self.output_dim = load4node(self.dataset_name)
-                  else:
-                        self.data = data
-                        if self.dataset_name == 'ogbn-arxiv':
-                              self.data.y = self.data.y.squeeze()
-                        self.input_dim = input_dim
-                        self.output_dim = output_dim
-                        self.graphs_list = graphs_list
-                  
-                  # 应用SVDFeatureReduction将特征维度统一为500（与PubMed数据集一致）
-                  if self.pre_train_model_path != 'None' and 'PubMed' in self.pre_train_model_path and self.dataset_name != 'PubMed':
-                        # 目标维度设为500（PubMed数据集的特征维度）
-                        target_dim = 500
-                        transform = SVDFeatureReduction(target_dim)
-                        self.data = transform(self.data)
-                        self.input_dim = target_dim
-                        print(f"Applied SVDFeatureReduction: Features reduced from {self.data.x.shape[1]} to {target_dim}")
-                  
-                  self.create_few_data_folder()
+                  self.data = data
+                  if self.dataset_name == 'ogbn-arxiv':
+                        self.data.y = self.data.y.squeeze()
+                  self.input_dim = input_dim
+                  self.output_dim = output_dim
+                  self.graphs_list = graphs_list
+            
+            self.create_few_data_folder()
 
       def create_few_data_folder(self):
             # 创建文件夹并保存数据
             k = self.shot_num  # shot_num 可变
             task_num = self.task_num  # task_num 可变
             for k in range(1, task_num+1):
-                  k_shot_folder = './Exp/sample_data/Node/'+ self.dataset_name +'/' + str(k) +'_shot'
+                  k_shot_folder = './Experiment/sample_data/Node/'+ self.dataset_name +'/' + str(k) +'_shot'
                   os.makedirs(k_shot_folder, exist_ok=True)
 
                   for i in range(1, task_num+1):
@@ -80,7 +66,7 @@ class NodeTask(BaseTask):
                   smallest_size = 1
             if self.dataset_name == 'PubMed':
                   smallest_size = 8
-            folder_path = './Exp/induced_graph/' + self.dataset_name
+            folder_path = './Experiment/induced_graph/' + self.dataset_name
             if not os.path.exists(folder_path):
                   os.makedirs(folder_path)
 
@@ -228,7 +214,7 @@ class NodeTask(BaseTask):
                   self.prompt_epoch = 50
                   self.epochs = int(self.epochs/self.answer_epoch)
             for i in range(1, self.task_num+1):
-                  sample_data_foler_path = "./Exp/sample_data/Node/{}/{}_shot/{}".format(self.dataset_name, self.shot_num, i)
+                  sample_data_foler_path = "./Experiment/sample_data/Node/{}/{}_shot/{}".format(self.dataset_name, self.shot_num, i)
 
                   if not os.path.exists(sample_data_foler_path):
                         print(f"Warning! Failed to find sample_data for shot {self.shot_num}, id {i}, path: {sample_data_foler_path}, skipping...")
@@ -380,13 +366,13 @@ class NodeTask(BaseTask):
             #             # train_lbls = torch.load("./data/fewshot_cora/{}-shot_cora/{}/labels.pt".format(self.shot_num,i)).type(torch.long).squeeze().cuda()
             #             # print("true",i,train_lbls)
             #             self.dataset_name ='Cora'
-            #             idx_train = torch.load("./Exp/sample_data/Node/{}/{}_shot/{}/train_idx.pt".format(self.dataset_name, self.shot_num, i)).type(torch.long).cuda()
+            #             idx_train = torch.load("./Experiment/sample_data/Node/{}/{}_shot/{}/train_idx.pt".format(self.dataset_name, self.shot_num, i)).type(torch.long).cuda()
             #             print('idx_train',idx_train)
-            #             train_lbls = torch.load("./Exp/sample_data/Node/{}/{}_shot/{}/train_labels.pt".format(self.dataset_name, self.shot_num, i)).type(torch.long).squeeze().cuda()
+            #             train_lbls = torch.load("./Experiment/sample_data/Node/{}/{}_shot/{}/train_labels.pt".format(self.dataset_name, self.shot_num, i)).type(torch.long).squeeze().cuda()
             #             print("true",i,train_lbls)
 
-            #             idx_test = torch.load("./Exp/sample_data/Node/{}/{}_shot/{}/test_idx.pt".format(self.dataset_name, self.shot_num, i)).type(torch.long).cuda()
-            #             test_lbls = torch.load("./Exp/sample_data/Node/{}/{}_shot/{}/test_labels.pt".format(self.dataset_name, self.shot_num, i)).type(torch.long).squeeze().cuda()
+            #             idx_test = torch.load("./Experiment/sample_data/Node/{}/{}_shot/{}/test_idx.pt".format(self.dataset_name, self.shot_num, i)).type(torch.long).cuda()
+            #             test_lbls = torch.load("./Experiment/sample_data/Node/{}/{}_shot/{}/test_labels.pt".format(self.dataset_name, self.shot_num, i)).type(torch.long).squeeze().cuda()
                         
             #             test_embs = embeds[0, idx_test]
             #             best = 1e9
@@ -436,5 +422,3 @@ class NodeTask(BaseTask):
                   
             
             # print("Node Task completed")
-
-
