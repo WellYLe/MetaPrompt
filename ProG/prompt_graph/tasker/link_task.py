@@ -71,7 +71,11 @@ class LinkTask(BaseTask):
         loss.backward()
         self.optimizer.step()
         return loss
-
+#检查训练过程——平衡样本
+#下游囊括进攻击过程反馈
+#topk
+#两个节点的诱导子图合并
+#
 
     @torch.no_grad()
     def test(self, data):
