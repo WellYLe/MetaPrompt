@@ -225,7 +225,7 @@ def load4link_prediction_single_graph(dataname, num_per_samples=1):
     data, input_dim, output_dim = load4node(dataname)
 
     
-    r"""进行负采样，生成负邻居样本s"""
+    r"""执行负采样并生成负邻居样本"""
     if data.is_directed():
         row, col = data.edge_index
         row, col = torch.cat([row, col], dim=0), torch.cat([col, row], dim=0)

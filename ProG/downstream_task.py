@@ -6,11 +6,10 @@ from prompt_graph.utils import seed_everything
 from torchsummary import summary
 from prompt_graph.utils import print_model_parameters
 from prompt_graph.utils import  get_args
-from prompt_graph.data import load4node,load4graph, split_induced_graphs, load4link_prediction_single_graph
+from prompt_graph.data import load4node,load4graph, split_induced_graphs
 import pickle
 import random
 import numpy as np
-
 import pandas as pd
 
 def load_induced_graph(dataset_name, data, device):
@@ -48,8 +47,9 @@ def get_downstream_task_delegate(args:argparse.Namespace):
         else:
             graphs_list = None 
         tasker = NodeTask(pre_train_model_path = args.pre_train_model_path, 
-                        dataset_name = args.dataset_name, num_layer = args.num_layer, gnn_type = args.gnn_type, hid_dim = args.hid_dim, prompt_type = args.prompt_type, epochs = args.epochs, 
-                        shot_num = args.shot_num, device=args.device, lr = args.lr, wd = args.decay,
+                        dataset_name = args.dataset_name, num_layer = args.num_layer,
+                        gnn_type = args.gnn_type, hid_dim = args.hid_dim, prompt_type = args.prompt_type,
+                        epochs = args.epochs, shot_num = args.shot_num, device=args.device, lr = args.lr, wd = args.decay,
                         batch_size = args.batch_size, data = data, input_dim = input_dim, output_dim = output_dim, graphs_list = graphs_list)
 
 
@@ -61,28 +61,10 @@ def get_downstream_task_delegate(args:argparse.Namespace):
                         shot_num = args.shot_num, device=args.device, lr = args.lr, wd = args.decay,
                         batch_size = args.batch_size, dataset = dataset, input_dim = input_dim, output_dim = output_dim)
     elif args.downstream_task == 'LinkTask':
-    # 使用load4link_prediction_single_graph函数加载链路预测数据,这里有问题
-        data, edge_label, edge_index, input_dim, output_dim = load4link_prediction_single_graph(args.dataset_name)
-        data = data.to(args.device)
-        
-        if args.prompt_type in ['Gprompt', 'All-in-one', 'GPF', 'GPF-plus']:
-            graphs_list = load_induced_graph(args.dataset_name, data, args.device) 
-        else:
-            graphs_list = None 
-            
         tasker = LinkTask(pre_train_model_path = args.pre_train_model_path, 
-                        dataset_name = args.dataset_name, num_layer = args.num_layer, 
-                        gnn_type = args.gnn_type, hid_dim = args.hid_dim, 
-                        prompt_type = args.prompt_type, epochs = args.epochs, 
-                        shot_num = args.shot_num, device=args.device, 
-                        lr = args.lr, wd = args.decay,
-                        batch_size = args.batch_size, 
-                        data = data,  # 传递data
-                        input_dim = input_dim, 
-                        output_dim = output_dim, 
-                        graphs_list = graphs_list,  # 添加graphs_list参数
-                        edge_label = edge_label,  # 添加边标签
-                        edge_index = edge_index)  # 添加边索引
+                        dataset_name = args.dataset_name, num_layer = args.num_layer, gnn_type = args.gnn_type, hid_dim = args.hid_dim, prompt_type = args.prompt_type, epochs = args.epochs,
+                        shot_num = args.shot_num, device=args.device, lr = args.lr, wd = args.decay,
+                        batch_size = args.batch_size)
     else:
         raise ValueError(f"Unexpected args.downstream_task type {args.downstream_task}.")
 
@@ -101,6 +83,3 @@ if __name__ == "__main__":
     print("Final AUROC {:.4f}±{:.4f}(std)".format(roc, std_roc)) 
 
     pre_train_type = tasker.pre_train_type
-
-
-

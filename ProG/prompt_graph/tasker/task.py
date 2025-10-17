@@ -9,9 +9,9 @@ from prompt_graph.utils import Gprompt_tuning_loss
 import numpy as np
 
 class BaseTask:
-    def __init__(self, pre_train_model_path='None', gnn_type='TransformerConv',
+    def __init__(self, pre_train_model_path='None', gnn_type='GCN',
                  hid_dim = 128, num_layer = 2, dataset_name='Cora', prompt_type='None', epochs=100, shot_num=10, device : int = 5, lr =0.001, wd = 5e-4,
-                 batch_size = 16, search = False, data = None):
+                 batch_size = 16, search = False):
         
         self.pre_train_model_path = pre_train_model_path
         self.pre_train_type = self.return_pre_train_type(pre_train_model_path)
@@ -28,7 +28,6 @@ class BaseTask:
         self.batch_size = batch_size
         self.search = search
         self.initialize_lossfn()
-        
 
     def initialize_lossfn(self):
         self.criterion = torch.nn.CrossEntropyLoss()
@@ -85,14 +84,7 @@ class BaseTask:
         elif self.prompt_type == 'GPF':
             self.prompt = GPF(self.input_dim).to(self.device)
         elif self.prompt_type == 'GPF-plus':
-            # 如果使用预训练的PubMed模型，传递原始维度参数
-            original_dim = None
-            if self.pre_train_model_path != 'None' and 'PubMed' in self.pre_train_model_path and hasattr(self, 'data'):
-                # 如果是PubMed预训练模型，但当前数据集不是PubMed
-                if self.data.x.shape[1] != 500:
-                    original_dim = self.data.x.shape[1]
-                    print(f"Using PubMed pre-trained model with current dataset feature dim: {original_dim}")
-            self.prompt = GPF_plus(500 if 'PubMed' in self.pre_train_model_path else self.input_dim, 20, original_dim=original_dim).to(self.device)
+            self.prompt = GPF_plus(self.input_dim, 20).to(self.device)
         # elif self.prompt_type == 'sagpool':
         #     self.prompt = SAGPoolPrompt(self.input_dim , num_clusters=5, ratio=0.5).to(self.device)
         # elif self.prompt_type == 'diffpool':
@@ -101,7 +93,7 @@ class BaseTask:
             self.prompt = Gprompt(self.hid_dim).to(self.device)
         elif self.prompt_type == 'MultiGprompt':
             nonlinearity = 'prelu'
-            self.Preprompt = NodePrePrompt(self.dataset_name, self.hid_dim, nonlinearity, 0.9, 0.9, 0.1, 0.001, 1, 0.3, 0).to(self.device)
+            self.Preprompt = NodePrePrompt(self.dataset_name, self.hid_dim, nonlinearity, 0.9, 0.9, 0.1, 0.001, 1, 0.3).to(self.device)
             self.Preprompt.load_state_dict(torch.load(self.pre_train_model_path))
             self.Preprompt.eval()
             self.feature_prompt = featureprompt(self.Preprompt.dgiprompt.prompt,self.Preprompt.graphcledgeprompt.prompt,self.Preprompt.lpprompt.prompt).to(self.device)
@@ -131,10 +123,10 @@ class BaseTask:
         print(self.gnn)
 
         if self.pre_train_model_path != 'None' and self.prompt_type != 'MultiGprompt':
-            # if self.gnn_type not in self.pre_train_model_path :
-            #     raise ValueError(f"the Downstream gnn '{self.gnn_type}' does not match the pre-train model")
-            # if self.dataset_name not in self.pre_train_model_path :
-            #     raise ValueError(f"the Downstream dataset '{self.dataset_name}' does not match the pre-train dataset")
+            if self.gnn_type not in self.pre_train_model_path :
+                raise ValueError(f"the Downstream gnn '{self.gnn_type}' does not match the pre-train model")
+            if self.dataset_name not in self.pre_train_model_path :
+                raise ValueError(f"the Downstream dataset '{self.dataset_name}' does not match the pre-train dataset")
 
             self.gnn.load_state_dict(torch.load(self.pre_train_model_path, map_location='cpu'))
             self.gnn.to(self.device)       
