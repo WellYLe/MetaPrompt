@@ -105,6 +105,15 @@ class BaseTask:
             raise KeyError(" We don't support this kind of prompt.")
 
     def initialize_gnn(self):
+        # 检查是否使用预训练的完整模型
+        if hasattr(self, 'pretrained_full_model_path') and self.pretrained_full_model_path != 'None':
+            # 直接加载完整的预训练模型
+            self.gnn = torch.load(self.pretrained_full_model_path, map_location='cpu')
+            self.gnn.to(self.device)
+            print(f"Successfully loaded full pre-trained model from {self.pretrained_full_model_path}!")
+            return
+            
+        # 原有的模型初始化逻辑
         if self.gnn_type == 'GAT':
             self.gnn = GAT(input_dim=self.input_dim, hid_dim=self.hid_dim, num_layer=self.num_layer)
         elif self.gnn_type == 'GCN':
@@ -122,6 +131,7 @@ class BaseTask:
         self.gnn.to(self.device)
         print(self.gnn)
 
+        # 加载预训练权重
         if self.pre_train_model_path != 'None' and self.prompt_type != 'MultiGprompt':
             if self.gnn_type not in self.pre_train_model_path :
                 raise ValueError(f"the Downstream gnn '{self.gnn_type}' does not match the pre-train model")

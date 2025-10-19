@@ -75,6 +75,9 @@ class Edgepred_GPPT(PreTrain):
         criterion = torch.nn.BCEWithLogitsLoss()
         
         self.gnn.train()
+        all_preds = []
+        all_labels = []
+        
         for step, (batch_edge_label, batch_edge_index) in enumerate(self.dataloader):
             self.optimizer.zero_grad()
 
@@ -105,9 +108,44 @@ class Edgepred_GPPT(PreTrain):
             accum_loss += float(loss.detach().cpu().item())
             total_step += 1
             
+            # 收集预测结果和标签，用于计算指标
+            with torch.no_grad():
+                batch_pred_prob = torch.sigmoid(batch_pred_log)
+                all_preds.append(batch_pred_prob.detach().cpu())
+                all_labels.append(batch_edge_label.detach().cpu())
+            
             print('第{}次反向传播过程'.format(step))
 
-        return accum_loss / total_step
+        # 计算整个epoch的指标
+        all_preds = torch.cat(all_preds)
+        all_labels = torch.cat(all_labels)
+        metrics = self.calculate_metrics(all_preds, all_labels)
+        
+        return accum_loss / total_step, metrics
+        
+    def calculate_metrics(self, preds, labels):
+        """计算各种评估指标"""
+        from sklearn.metrics import roc_auc_score, average_precision_score, accuracy_score
+        
+        # 转换为numpy数组
+        preds_np = preds.numpy()
+        labels_np = labels.numpy()
+        
+        # 计算AUC
+        auc = roc_auc_score(labels_np, preds_np)
+        
+        # 计算AP (Average Precision)
+        ap = average_precision_score(labels_np, preds_np)
+        
+        # 计算准确率 (需要将概率转换为二分类预测)
+        pred_labels = (preds_np > 0.5).astype(int)
+        acc = accuracy_score(labels_np, pred_labels)
+        
+        return {
+            'auc': auc,
+            'ap': ap,
+            'accuracy': acc
+        }
 
     def pretrain(self):
         num_epoch = self.epochs
@@ -117,8 +155,9 @@ class Edgepred_GPPT(PreTrain):
                  
         for epoch in range(1, num_epoch + 1):
             st_time = time.time()
-            train_loss = self.pretrain_one_epoch()
+            train_loss, metrics = self.pretrain_one_epoch()
             print(f"Edgepred_GPPT [Pretrain] Epoch {epoch}/{num_epoch} | Train Loss {train_loss:.5f} | "
+                  f"AUC {metrics['auc']:.4f} | AP {metrics['ap']:.4f} | Accuracy {metrics['accuracy']:.4f} | "
                   f"Cost Time {time.time() - st_time:.3f}s")
             
             if train_loss_min > train_loss:
@@ -131,7 +170,7 @@ class Edgepred_GPPT(PreTrain):
                     print('Early stopping at '+str(epoch) +' eopch!')
                     break
             print(cnt_wait)
-        folder_path = f"./Experiment/pre_trained_model_self/{self.dataset_name}"
+        folder_path = f"./Experiment/pre_trained_model_self/{self.dataset_name}+'2' "
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
             

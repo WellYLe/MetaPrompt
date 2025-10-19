@@ -132,7 +132,7 @@ class BaseMeta(BaseAttack):
         singleton_mask = self.filter_potential_singletons(modified_adj)
         adj_meta_grad = adj_meta_grad *  singleton_mask
 
-        # Optional: weight scores by per-node loss, mapping node loss to edge pair weight
+        # 可选：按节点损失加权分数，将节点损失映射为边对权重
         if node_loss_weight is not None:
             # Normalize to [0,1] to keep scale reasonable
             nlw = node_loss_weight

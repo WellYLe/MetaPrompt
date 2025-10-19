@@ -235,7 +235,11 @@ class NodeTask(BaseTask):
                   print("true",i,train_lbls)
                   idx_test = torch.load(f"{sample_data_foler_path}/test_idx.pt").type(torch.long).to(self.device)
                   test_lbls = torch.load(f"{sample_data_foler_path}/test_labels.pt").type(torch.long).squeeze().to(self.device)
-
+                  #这个位置最好变成以边为检索对象，而不是以节点为检索对象
+                  
+                  
+                  
+                  
                   # GPPT prompt initialtion
                   if self.prompt_type == 'GPPT':
                         node_embedding = self.gnn(self.data.x, self.data.edge_index)

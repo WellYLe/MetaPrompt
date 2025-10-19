@@ -52,7 +52,7 @@ class LinkTask(BaseTask):
         enhanced_node_emb = node_emb + prompt_context
         
         
-        # We perform a new round of negative sampling for every training epoch:
+        # 我们对每个训练历元进行新一轮负采样：
         neg_edge_index = negative_sampling(
             edge_index=train_data.edge_index, num_nodes=train_data.num_nodes,
             num_neg_samples=train_data.edge_label_index.size(1), method='sparse')
@@ -67,15 +67,11 @@ class LinkTask(BaseTask):
         ], dim=0)
 
         out = self.gnn.decode(enhanced_node_emb, edge_label_index).view(-1)
-        loss = self.criterion(out, edge_label)
+        loss = -self.criterion(out, edge_label)
         loss.backward()
         self.optimizer.step()
         return loss
-#检查训练过程——平衡样本
-#下游囊括进攻击过程反馈
-#topk
-#两个节点的诱导子图合并
-#
+
 
     @torch.no_grad()
     def test(self, data):
@@ -97,7 +93,7 @@ class LinkTask(BaseTask):
         train_data, val_data, test_data = self. dataset[0]
 
         best_val_auc = final_test_auc = 0
-        for epoch in range(1, 101):
+        for epoch in range(1, 1001):
             loss = self.train(train_data)
             val_auc = self.test(val_data)
             test_auc = self.test(test_data)
