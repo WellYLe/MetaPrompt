@@ -15,12 +15,10 @@ from torch.nn.parameter import Parameter
 from tqdm import tqdm
 from deeprobust.graph import utils
 from deeprobust.graph.global_attack import BaseAttack
-import sys
-
 
 
 class BaseMeta(BaseAttack):
-    """元攻击抽象基类. Adversarial Attacks on Graph Neural
+    """Abstract base class for meta attack. Adversarial Attacks on Graph Neural
     Networks via Meta Learning, ICLR 2019,
     https://openreview.net/pdf?id=Bylnx209YX
 
@@ -85,7 +83,8 @@ class BaseMeta(BaseAttack):
 
     def filter_potential_singletons(self, modified_adj):
         """
-        计算可能导致单节点的条目掩码，即对应于条目的两个节点之一的度为1，并且这两个节点之间有一条边。
+        Computes a mask for entries potentially leading to singleton nodes, i.e. one of the two nodes corresponding to
+        the entry have degree 1 and there is an edge between the two nodes.
         """
 
         degrees = modified_adj.sum(0)
@@ -107,9 +106,10 @@ class BaseMeta(BaseAttack):
 
     def log_likelihood_constraint(self, modified_adj, ori_adj, ll_cutoff):
         """
-        计算导致对数似然约束被违反的条目的掩码。
+        Computes a mask for entries that, if the edge corresponding to the entry is added/removed, would lead to the
+        log likelihood constraint to be violated.
 
-        注意，不同的数据类型（float、double）可能会影响最终结果。
+        Note that different data type (float, double) can effect the final results.
         """
         t_d_min = torch.tensor(2.0).to(self.device)
         if self.undirected:
@@ -546,7 +546,7 @@ class MetaApprox(BaseMeta):
                 self.feature_grad_sum.data.fill_(0)
 
             self.inner_train(modified_features, modified_adj, idx_train, idx_unlabeled, labels, labels_self_training)
-#这里不调用inner_train，因为我们只需要计算梯度，不需要训练，那么要改为用Surrogate model的预测结果来评分
+
             adj_meta_score = torch.tensor(0.0).to(self.device)
             feature_meta_score = torch.tensor(0.0).to(self.device)
 
@@ -554,7 +554,7 @@ class MetaApprox(BaseMeta):
                 adj_meta_score = self.get_adj_score(self.adj_grad_sum, modified_adj, ori_adj, ll_constraint, ll_cutoff)
             if self.attack_features:
                 feature_meta_score = self.get_feature_score(self.feature_grad_sum, modified_features)
-#就是这个位置要把get_feature_score函数改写成能获得特征梯度的函数，然后用特征梯度来评分
+
             if adj_meta_score.max() >= feature_meta_score.max():
                 adj_meta_argmax = torch.argmax(adj_meta_score)
                 row_idx, col_idx = utils.unravel_index(adj_meta_argmax, ori_adj.shape)
@@ -570,300 +570,3 @@ class MetaApprox(BaseMeta):
             self.modified_adj = self.get_modified_adj(ori_adj).detach()
         if self.attack_features:
             self.modified_features = self.get_modified_features(ori_features).detach()
-class MetaEva(BaseMeta):
-    """Approximated version of  Meta Attack. Adversarial Attacks on
-    Graph Neural Networks via Meta Learning, ICLR 2019.
-
-    Examples
-    --------
-
-    >>> import numpy as np
-    >>> from deeprobust.graph.data import Dataset
-    >>> from deeprobust.graph.defense import GCN
-    >>> from deeprobust.graph.global_attack import MetaEva
-    >>> from deeprobust.graph.utils import preprocess
-    >>> data = Dataset(root='/tmp/', name='cora')
-    >>> adj, features, labels = data.adj, data.features, data.labels
-    >>> adj, features, labels = preprocess(adj, features, labels, preprocess_adj=False) # conver to tensor
-    >>> idx_train, idx_val, idx_test = data.idx_train, data.idx_val, data.idx_test
-    >>> idx_unlabeled = np.union1d(idx_val, idx_test)
-    >>> # Setup Surrogate model
-    >>> surrogate = GCN(nfeat=features.shape[1], nclass=labels.max().item()+1,
-                    nhid=16, dropout=0, with_relu=False, with_bias=False, device='cpu').to('cpu')
-    >>> surrogate.fit(features, adj, labels, idx_train, idx_val, patience=30)
-    >>> # Setup Attack Model
-    >>> model = MetaApprox(surrogate, nnodes=adj.shape[0], feature_shape=features.shape,
-            attack_structure=True, attack_features=False, device='cpu', lambda_=0).to('cpu')
-    >>> # Attack
-    >>> model.attack(features, adj, labels, idx_train, idx_unlabeled, n_perturbations=10, ll_constraint=True)
-    >>> modified_adj = model.modified_adj
-
-    """
-
-    def __init__(self, model, nnodes, feature_shape=None, attack_structure=True, attack_features=False, undirected=True, device='cpu', with_bias=False, lambda_=0.5, train_iters=100, lr=0.01):
-
-        super(MetaApprox, self).__init__(model, nnodes, feature_shape, lambda_, attack_structure, attack_features, undirected, device)
-
-        self.lr = lr
-        self.train_iters = train_iters
-        self.adj_meta_grad = None
-        self.features_meta_grad = None
-        if self.attack_structure:
-            self.adj_grad_sum = torch.zeros(nnodes, nnodes).to(device)
-        if self.attack_features:
-            self.feature_grad_sum = torch.zeros(feature_shape).to(device)
-
-        self.with_bias = with_bias
-
-        self.weights = []
-        self.biases = []
-
-        previous_size = self.nfeat
-        for ix, nhid in enumerate(self.hidden_sizes):
-            weight = Parameter(torch.FloatTensor(previous_size, nhid).to(device))
-            bias = Parameter(torch.FloatTensor(nhid).to(device))
-            previous_size = nhid
-
-            self.weights.append(weight)
-            self.biases.append(bias)
-
-        output_weight = Parameter(torch.FloatTensor(previous_size, self.nclass).to(device))
-        output_bias = Parameter(torch.FloatTensor(self.nclass).to(device))
-        self.weights.append(output_weight)
-        self.biases.append(output_bias)
-
-        self.optimizer = optim.Adam(self.weights + self.biases, lr=lr) # , weight_decay=5e-4)
-        self._initialize()
-
-    def _initialize(self):
-        for w, b in zip(self.weights, self.biases):
-            # w.data.fill_(1)
-            # b.data.fill_(1)
-            stdv = 1. / math.sqrt(w.size(1))
-            w.data.uniform_(-stdv, stdv)
-            b.data.uniform_(-stdv, stdv)
-
-        self.optimizer = optim.Adam(self.weights + self.biases, lr=self.lr)
-
-    def inner_train(self, features, modified_adj, idx_train, idx_unlabeled, labels, labels_self_training):
-        adj_norm = utils.normalize_adj_tensor(modified_adj)
-        for j in range(self.train_iters):
-            # hidden = features
-            # for w, b in zip(self.weights, self.biases):
-            #     if self.sparse_features:
-            #         hidden = adj_norm @ torch.spmm(hidden, w) + b
-            #     else:
-            #         hidden = adj_norm @ hidden @ w + b
-            #     if self.with_relu:
-            #         hidden = F.relu(hidden)
-
-            hidden = features
-            for ix, w in enumerate(self.weights):
-                b = self.biases[ix] if self.with_bias else 0
-                if self.sparse_features:
-                    hidden = adj_norm @ torch.spmm(hidden, w) + b
-                else:
-                    hidden = adj_norm @ hidden @ w + b
-                if self.with_relu:
-                    hidden = F.relu(hidden)
-
-            output = F.log_softmax(hidden, dim=1)
-            loss_labeled = F.nll_loss(output[idx_train], labels[idx_train])
-            loss_unlabeled = F.nll_loss(output[idx_unlabeled], labels_self_training[idx_unlabeled])
-
-            if self.lambda_ == 1:
-                attack_loss = loss_labeled
-            elif self.lambda_ == 0:
-                attack_loss = loss_unlabeled
-            else:
-                attack_loss = self.lambda_ * loss_labeled + (1 - self.lambda_) * loss_unlabeled
-
-            self.optimizer.zero_grad()
-            loss_labeled.backward(retain_graph=True)
-
-            if self.attack_structure:
-                self.adj_changes.grad.zero_()
-                self.adj_grad_sum += torch.autograd.grad(attack_loss, self.adj_changes, retain_graph=True)[0]
-            if self.attack_features:
-                self.feature_changes.grad.zero_()
-                self.feature_grad_sum += torch.autograd.grad(attack_loss, self.feature_changes, retain_graph=True)[0]
-
-            self.optimizer.step()
-
-
-        loss_test_val = F.nll_loss(output[idx_unlabeled], labels[idx_unlabeled])
-        print('GCN loss on unlabled data: {}'.format(loss_test_val.item()))
-        print('GCN acc on unlabled data: {}'.format(utils.accuracy(output[idx_unlabeled], labels[idx_unlabeled]).item()))
-    def _single_step_feedback(self, features, modified_adj, idx_train, idx_unlabeled, labels, labels_self_training):
-        """
-        单步反馈：只做一次前向和一次反向，计算关于 adj_changes / feature_changes 的梯度并累加到 adj_grad_sum/feature_grad_sum。
-        优先使用 self.surrogate(如果存在并可调用)进行前向，否则使用内部 weights/biases 做前向，但确保不做 optimizer.step().
-        """
-        # 确保 adj_changes/feature_changes 需要梯度
-        if self.attack_structure:
-            self.adj_changes.requires_grad_(True)
-        if self.attack_features:
-            self.feature_changes.requires_grad_(True)
-
-        # 计算被扰动的邻接与归一化
-        modified_adj = modified_adj
-        adj_norm = utils.normalize_adj_tensor(modified_adj)
-
-        # ---- 使用 surrogate (if available) ----
-        use_surrogate = hasattr(self, 'surrogate') and self.surrogate is not None
-        output = None
-        if use_surrogate:
-            # 代理模型应该被冻结（已训练完）。我们只用它的预测，不对其参数求梯度。
-            # 多数deeprobust的GCN类实现了 __call__ 或 forward 两种调用方式，尝试兼容两者。
-            try:
-                # 尝试直接调用
-                out = self.model(features, modified_adj)
-            except Exception:
-                try:
-                    out = self.model.forward(features, modified_adj)
-                except Exception:
-                    out = None
-                    print("Warning: surrogate model forward method not found. Falling back to internal weights.")
-                    sys.exit(0)
-            if out is not None:
-                # 如果 surrogate 返回了 logits
-                output = F.log_softmax(out, dim=1)
-
-        # ---- 若 surrogate 不可用或不可调用，则用内部权重做前向（但禁止对权重求梯度） ----
-        if output is None:
-            # 保存原来的 requires_grad 状态
-            requires_backup = [w.requires_grad for w in self.weights] + [b.requires_grad for b in self.biases]
-            # 禁止 weights / biases 的梯度计算
-            for w in self.weights:
-                w.requires_grad_(False)
-            for b in self.biases:
-                b.requires_grad_(False)
-
-            # 前向（与原 inner_train 相同的前向逻辑）
-            hidden = features
-            for ix, w in enumerate(self.weights):
-                b = self.biases[ix] if self.with_bias else 0
-                if self.sparse_features:
-                    hidden = adj_norm @ torch.spmm(hidden, w) + b
-                else:
-                    hidden = adj_norm @ hidden @ w + b
-                if self.with_relu:
-                    hidden = F.relu(hidden)
-            output = F.log_softmax(hidden, dim=1)
-
-            # 恢复 requires_grad 状态（以免影响外部流程）
-            for param, r in zip(self.weights + self.biases, requires_backup):
-                param.requires_grad_(r)
-
-        # ---- 计算攻击损失（single-step） ----
-        # 这里我们沿用你原来的 lambda 策略：loss_labeled / loss_unlabeled 的线性组合
-        loss_labeled = F.nll_loss(output[idx_train], labels[idx_train])
-        loss_unlabeled = F.nll_loss(output[idx_unlabeled], labels_self_training[idx_unlabeled])
-        if self.lambda_ == 1:
-            attack_loss = loss_labeled
-        elif self.lambda_ == 0:
-            attack_loss = loss_unlabeled
-        else:
-            attack_loss = self.lambda_ * loss_labeled + (1 - self.lambda_) * loss_unlabeled
-
-        # ---- 对 adj_changes / feature_changes 求一次梯度 ----
-        # 不对 weights/biases 求梯度与 optimizer.step()
-        if self.attack_structure:
-            # 清空旧 grad（保险起见）
-            if self.adj_changes.grad is not None:
-                self.adj_changes.grad.zero_()
-            grad_adj = torch.autograd.grad(attack_loss, self.adj_changes, retain_graph=False, allow_unused=True)[0]
-            if grad_adj is None:
-                grad_adj = torch.zeros_like(self.adj_changes)
-            # 累积梯度
-            self.adj_grad_sum += grad_adj
-
-        if self.attack_features:
-            if self.feature_changes.grad is not None:
-                self.feature_changes.grad.zero_()
-            grad_feat = torch.autograd.grad(attack_loss, self.feature_changes, retain_graph=False, allow_unused=True)[0]
-            if grad_feat is None:
-                grad_feat = torch.zeros_like(self.feature_changes)
-            self.feature_grad_sum += grad_feat
-
-        # 清理 requires_grad 标记
-        if self.attack_structure:
-            self.adj_changes.requires_grad_(False)
-        if self.attack_features:
-            self.feature_changes.requires_grad_(False)
-        loss_test_val = F.nll_loss(output[idx_unlabeled], labels[idx_unlabeled])
-        acc_test_val = utils.accuracy(output[idx_unlabeled], labels[idx_unlabeled]).item()
-        print('GCN loss on unlabled data: {}'.format(loss_test_val.item()))
-        print('GCN acc on unlabled data: {}'.format(acc_test_val))
-        # 返回一下用于 debug 的值
-        #return attack_loss.item()
-
-    def attack(self, ori_features, ori_adj, labels, idx_train, idx_unlabeled, n_perturbations, ll_constraint=True, ll_cutoff=0.004):
-        """Generate n_perturbations on the input graph.
-
-        Parameters
-        ----------
-        ori_features :
-            Original (unperturbed) node feature matrix
-        ori_adj :
-            Original (unperturbed) adjacency matrix
-        labels :
-            node labels
-        idx_train :
-            node training indices
-        idx_unlabeled:
-            unlabeled nodes indices
-        n_perturbations : int
-            Number of perturbations on the input graph. Perturbations could
-            be edge removals/additions or feature removals/additions.
-        ll_constraint: bool
-            whether to exert the likelihood ratio test constraint
-        ll_cutoff : float
-            The critical value for the likelihood ratio test of the power law distributions.
-            See the Chi square distribution with one degree of freedom. Default value 0.004
-            corresponds to a p-value of roughly 0.95. It would be ignored if `ll_constraint`
-            is False.
-
-        """
-        ori_adj, ori_features, labels = utils.to_tensor(ori_adj, ori_features, labels, device=self.device)
-        labels_self_training = self.self_training_label(labels, idx_train)
-        self.sparse_features = sp.issparse(ori_features)
-        modified_adj = ori_adj
-        modified_features = ori_features
-
-        for i in tqdm(range(n_perturbations), desc="Perturbing graph"):
-            self._initialize()#每次迭代都要重新初始化，否则梯度会累加
-
-            if self.attack_structure:
-                modified_adj = self.get_modified_adj(ori_adj)#重新计算修改后的邻接矩阵，否则梯度会累加
-                self.adj_grad_sum.data.fill_(0)#梯度置0
-            if self.attack_features:
-                modified_features = ori_features + self.feature_changes
-                self.feature_grad_sum.data.fill_(0)
-
-            self.inner_train(modified_features, modified_adj, idx_train, idx_unlabeled, labels, labels_self_training)
-#这里不调用inner_train，因为我们只需要计算梯度，不需要训练，那么要改为用Surrogate model的预测结果来评分
-            adj_meta_score = torch.tensor(0.0).to(self.device)#邻接矩阵梯度评分
-            feature_meta_score = torch.tensor(0.0).to(self.device)#特征矩阵梯度评分
-
-            if self.attack_structure:
-                adj_meta_score = self.get_adj_score(self.adj_grad_sum, modified_adj, ori_adj, ll_constraint, ll_cutoff)
-            if self.attack_features:
-                feature_meta_score = self.get_feature_score(self.feature_grad_sum, modified_features)
-#就是这个位置要把get_feature_score函数改写成能获得特征梯度的函数，然后用特征梯度来评分
-            if adj_meta_score.max() >= feature_meta_score.max():
-                adj_meta_argmax = torch.argmax(adj_meta_score)
-                row_idx, col_idx = utils.unravel_index(adj_meta_argmax, ori_adj.shape)
-                self.adj_changes.data[row_idx][col_idx] += (-2 * modified_adj[row_idx][col_idx] + 1)
-                if self.undirected:
-                    self.adj_changes.data[col_idx][row_idx] += (-2 * modified_adj[row_idx][col_idx] + 1)
-            else:
-                feature_meta_argmax = torch.argmax(feature_meta_score)
-                row_idx, col_idx = utils.unravel_index(feature_meta_argmax, ori_features.shape)
-                self.feature_changes.data[row_idx][col_idx] += (-2 * modified_features[row_idx][col_idx] + 1)
-
-        if self.attack_structure:
-            self.modified_adj = self.get_modified_adj(ori_adj).detach()
-        if self.attack_features:
-            self.modified_features = self.get_modified_features(ori_features).detach()
-    #def attack(self, ori_features, ori_adj, labels, idx_test, idx_unlabeled, n_perturbations, ll_constraint=True, ll_cutoff=0.004):

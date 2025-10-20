@@ -73,7 +73,7 @@ class BaseMeta(BaseAttack):
     def attack(self, adj, labels, n_perturbations):
         pass
 
-    def get_modified_adj(self, ori_adj):
+    def get_modified_adj(self, ori_adj):#不动，依旧如此，因为这里只是接受安排，然后给个结果
         adj_changes_square = self.adj_changes - torch.diag(torch.diag(self.adj_changes, 0))
         # ind = np.diag_indices(self.adj_changes.shape[0]) # this line seems useless
         if self.undirected:
@@ -81,13 +81,15 @@ class BaseMeta(BaseAttack):
         adj_changes_square = torch.clamp(adj_changes_square, -1, 1)
         modified_adj = adj_changes_square + ori_adj
         return modified_adj
+    
+
 
     def get_modified_features(self, ori_features):
         return ori_features + self.feature_changes
 
     def filter_potential_singletons(self, modified_adj):
         """
-        计算可能导致单节点的条目掩码，即对应于条目的两个节点之一的度为1，并且这两个节点之间有一条边。
+        计算可能导致单节点的条目掩码,即对应于条目的两个节点之一的度为1,并且这两个节点之间有一条边。
         """
 
         degrees = modified_adj.sum(0)
@@ -100,7 +102,7 @@ class BaseMeta(BaseAttack):
         return flat_mask
 
     def self_training_label(self, labels, idx_train):
-        # Predict the labels of the unlabeled nodes to use them for self-training.
+        # 预测未标记节点的标签，用于自我训练。
         output = self.surrogate.output
         labels_self_training = output.argmax(1)
         labels_self_training[idx_train] = labels[idx_train]
@@ -125,6 +127,7 @@ class BaseMeta(BaseAttack):
         return allowed_mask, current_ratio
 
     def get_adj_score(self, adj_grad, modified_adj, ori_adj, ll_constraint, ll_cutoff, node_loss_weight=None):
+        #这个函数目前没用了
         adj_meta_grad = adj_grad * (-2 * modified_adj + 1)
         # Make sure that the minimum entry is 0.
         adj_meta_grad = adj_meta_grad - adj_meta_grad.min()
@@ -157,8 +160,40 @@ class BaseMeta(BaseAttack):
         feature_meta_grad = feature_grad * (-2 * modified_features + 1)
         feature_meta_grad -= feature_meta_grad.min()
         return feature_meta_grad
+class GPF(torch.nn.Module):
+        def __init__(self, in_channels: int):
+            super(GPF, self).__init__()
+            self.global_emb = torch.nn.Parameter(torch.Tensor(1,in_channels))
+            self.reset_parameters()
 
+        def reset_parameters(self):
+            glorot(self.global_emb)
 
+        def add(self, x: torch.Tensor):
+            return x + self.global_emb
+        
+        def GPFTrain(self, train_loader):
+            self.prompt.train()
+            total_loss = 0.0 
+            
+            for batch in train_loader:  
+                  self.optimizer.zero_grad() 
+                  batch = batch.to(self.device)
+                  batch.x = self.prompt.add(batch.x)
+                  out = self.gnntemp(self.weights,self.biases, batch.x, batch.edge_index, batch.batch, prompt = self.prompt, prompt_type = self.prompt_type)
+                  out = self.answering(out)
+                  loss = self.criterion(out, batch.y)  
+                  loss.backward()  
+                  self.optimizer.step()  
+                  total_loss += loss.item()  
+            return total_loss / len(train_loader) 
+        def gnntemp(self, weights, biases, x, edge_index, batch, prompt = None, prompt_type = None):
+            for ix, w in enumerate(weights):
+                b = biases[ix] if self.with_bias else 0
+                x = self.gnnlayer(x, edge_index, w, b)
+                if self.with_relu:
+                    x = F.relu(x)
+            return x
 class Metattack(BaseMeta):
     """Meta attack. Adversarial Attacks on Graph Neural Networks
     via Meta Learning, ICLR 2019.
@@ -245,7 +280,7 @@ class Metattack(BaseMeta):
                 b.data.uniform_(-stdv, stdv)
                 v.data.fill_(0)
 
-    def inner_train(self, features, adj_norm, idx_train, idx_unlabeled, labels):
+    def inner_train(self, features, adj_norm, idx_train, idx_unlabeled, labels):#inner_train改成prompt_train
         self._initialize()
 
         for ix in range(len(self.hidden_sizes) + 1):
@@ -284,9 +319,30 @@ class Metattack(BaseMeta):
             self.weights = [w - self.lr * v for w, v in zip(self.weights, self.w_velocities)]
             if self.with_bias:
                 self.biases = [b - self.lr * v for b, v in zip(self.biases, self.b_velocities)]
+    # def inner_train_but_prompt(self, features, adj_norm, idx_train, idx_unlabeled, labels):
+    #      pretrained_gnn.eval()   # 冻结模型
+    #     for param in pretrained_gnn.parameters():
+    #         param.requires_grad = False
 
+    #     x = data.x
+    #     edge_index = data.edge_index
+
+    #     x_prompted = gpf(x)     # 加上图提示
+    #     out = pretrained_gnn(x_prompted, edge_index)
+    #     loss = F.cross_entropy(out[data.train_mask], data.y[data.train_mask])
+
+    #     optimizer.zero_grad()
+    #     loss.backward()
+    #     optimizer.step()
+
+    #     return loss.item()
+    #      这是受害者模型冻结
+
+        
+
+        
     def get_meta_grad(self, features, adj_norm, idx_train, idx_unlabeled, labels, labels_self_training):
-
+        #这个函数也不再用了，所有的梯度计算都在GPF里面集成
         hidden = features
         for ix, w in enumerate(self.weights):
             b = self.biases[ix] if self.with_bias else 0
@@ -320,7 +376,13 @@ class Metattack(BaseMeta):
         if self.attack_features:
             feature_grad = torch.autograd.grad(attack_loss, self.feature_changes, retain_graph=True)[0]
         return adj_grad, feature_grad
-
+    def pretrainGNNGPL(self):
+        self.prompt = GPF(self.input_dim).to(self.device)#初始化prompt
+        out = self.prompt.add(self.modified_adj)#获得prompt层的嵌入表示
+        out = load_model(out, self.gnnPath)#用节点嵌入再去查阅我预训练的输出
+        return out
+        
+        
     def attack(self, ori_features, ori_adj, labels, idx_train, idx_unlabeled, n_perturbations, ll_constraint=True, ll_cutoff=0.004):
         """Generate n_perturbations on the input graph.
 
@@ -354,28 +416,37 @@ class Metattack(BaseMeta):
         labels_self_training = self.self_training_label(labels, idx_train)# 自训练标签
         modified_adj = ori_adj# 复制原始邻接矩阵
         modified_features = ori_features# 复制原始特征矩阵
-
+        self.initialize_gnn()
+        self.answering =  torch.nn.Sequential(torch.nn.Linear(self.hid_dim, self.output_dim),
+                                    torch.nn.Softmax(dim=1)).to(self.device) 
+        self.initialize_prompt()
+        self.initialize_optimizer()
+        
         for i in tqdm(range(n_perturbations), desc="Perturbing graph"):
             if self.attack_structure:
                 modified_adj = self.get_modified_adj(ori_adj)# 更新扰动后的邻接矩阵
 
             if self.attack_features:
                 modified_features = ori_features + self.feature_changes
+            #GPFTrain(self, modified_adj)这里完成一次训练，但是没有诱导子图啊，如果每轮都临时构造诱导子图，
+            #那么就会有很多重复计算，要么就是这里彻底不训练，只是每次用这个预训练好的GPL来预测，而不更新GPL
+           
+
 
             adj_norm = utils.normalize_adj_tensor(modified_adj)# 归一化扰动后的邻接矩阵
             self.inner_train(modified_features, adj_norm, idx_train, idx_unlabeled, labels)# 训练GCN模型
 
-            adj_grad, feature_grad = self.get_meta_grad(modified_features, adj_norm, idx_train, idx_unlabeled, labels, labels_self_training)# 计算元梯度    
+            #adj_grad, feature_grad = self.get_meta_grad(modified_features, adj_norm, idx_train, idx_unlabeled, labels, labels_self_training)# 计算元梯度    
 
             adj_meta_score = torch.tensor(0.0).to(self.device)
             feature_meta_score = torch.tensor(0.0).to(self.device)
             if self.attack_structure:
-                adj_meta_score = self.get_adj_score(adj_grad, modified_adj, ori_adj, ll_constraint, ll_cutoff)
-            if self.attack_features:
+                #adj_meta_score = self.get_adj_score(adj_grad, modified_adj, ori_adj, ll_constraint, ll_cutoff)
+                adj_meta_score = self.pretrainGNNGPL(modified_adj)#返回一个矩阵，意味着此时带有提示的GNN对每条边的预测结果
                 feature_meta_score = self.get_feature_score(feature_grad, modified_features)
-
+            
             if adj_meta_score.max() >= feature_meta_score.max():
-                adj_meta_argmax = torch.argmax(adj_meta_score)
+                adj_meta_argmax = torch.argmax(adj_meta_score)#在所有边里找最佳扰动点
                 row_idx, col_idx = utils.unravel_index(adj_meta_argmax, ori_adj.shape)
                 self.adj_changes.data[row_idx][col_idx] += (-2 * modified_adj[row_idx][col_idx] + 1)
                 if self.undirected:
@@ -389,3 +460,5 @@ class Metattack(BaseMeta):
             self.modified_adj = self.get_modified_adj(ori_adj).detach()
         if self.attack_features:
             self.modified_features = self.get_modified_features(ori_features).detach()
+            
+    
