@@ -6,6 +6,8 @@
 """
 import sys
 import os
+
+from DeepRobust.examples.graph.test_visualization import clean_adj
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import math
 import numpy as np
@@ -417,6 +419,8 @@ class Metattack(BaseMeta):
         modified_adj = ori_adj# 复制原始邻接矩阵
         modified_features = ori_features# 复制原始特征矩阵
         self.initialize_gnn()
+        self.first_train(clean_features, clean_adj, idx_train, idx_unlabeled, labels)
+        #这里在clean graph上训练GCN
         self.answering =  torch.nn.Sequential(torch.nn.Linear(self.hid_dim, self.output_dim),
                                     torch.nn.Softmax(dim=1)).to(self.device) 
         self.initialize_prompt()
@@ -428,14 +432,12 @@ class Metattack(BaseMeta):
 
             if self.attack_features:
                 modified_features = ori_features + self.feature_changes
-            #GPFTrain(self, modified_adj)这里完成一次训练，但是没有诱导子图啊，如果每轮都临时构造诱导子图，
-            #那么就会有很多重复计算，要么就是这里彻底不训练，只是每次用这个预训练好的GPL来预测，而不更新GPL
-           
-
-
+            
             adj_norm = utils.normalize_adj_tensor(modified_adj)# 归一化扰动后的邻接矩阵
-            self.inner_train(modified_features, adj_norm, idx_train, idx_unlabeled, labels)# 训练GCN模型
-
+            adj_grad = get_grad(self.inner_Predict(modified_features, adj_norm, idx_train, idx_unlabeled, labels))# 用GCN模型预测并求梯度
+            #这里不训练Victim，只是用预训练好的GPL来预测，而不更新GNN参数
+            GPFTrain(adj_grad)#在这个里面p被更新
+            #这里用Victim的反馈来求梯度，并且更新prompt参数
             #adj_grad, feature_grad = self.get_meta_grad(modified_features, adj_norm, idx_train, idx_unlabeled, labels, labels_self_training)# 计算元梯度    
 
             adj_meta_score = torch.tensor(0.0).to(self.device)
@@ -443,6 +445,7 @@ class Metattack(BaseMeta):
             if self.attack_structure:
                 #adj_meta_score = self.get_adj_score(adj_grad, modified_adj, ori_adj, ll_constraint, ll_cutoff)
                 adj_meta_score = self.pretrainGNNGPL(modified_adj)#返回一个矩阵，意味着此时带有提示的GNN对每条边的预测结果
+                
                 feature_meta_score = self.get_feature_score(feature_grad, modified_features)
             
             if adj_meta_score.max() >= feature_meta_score.max():
