@@ -1,2 +1,11 @@
+# 大文件忽略
 ProG/Experiment/induced_graph_min100_max300.pkl
+ProG/Experiment/induced_graph/Cora/induced_graph_min100_max300.pkl
+ProG/Experiment/induced_graph/**/*.pkl
 *.pt
+
+# 其他大文件类型
+*.pkl
+*.npz
+*.h5
+*.hdf5
