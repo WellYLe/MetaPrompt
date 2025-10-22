@@ -1,6 +1,7 @@
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import numpy as np
 import scipy.sparse as sp
-import os
 import sys
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 if REPO_ROOT not in sys.path:
@@ -17,11 +18,11 @@ idx_test = d.idx_test
 # 读取原文件
 data = np.load('cora.npz', allow_pickle=True)
 
-new_adj = sp.load_npz(os.path.join(REPO_ROOT, 'mod_adj-095.npz')).tocsr()
+new_adj = sp.load_npz('../../../cora_mod_adj_00001.npz').tocsr()
 new_adj = new_adj.tocsr()
 
 features = features.tocsr()
-np.savez('cora_modified_095.npz',
+np.savez('cora_modified_00001.npz',
          adj_data=new_adj.data,
          adj_indices=new_adj.indices,
          adj_indptr=new_adj.indptr,

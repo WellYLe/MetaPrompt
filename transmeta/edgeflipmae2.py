@@ -49,8 +49,8 @@ class EdgeFlipMAELoss(nn.Module):
         self.noise_rate = noise_rate
         self.device = device
         
-        # 掩码token用于节点特征掩蔽（确保在同一设备）
-        self.mask_token = nn.Parameter(torch.zeros(1, node_feat_dim, device=device))
+        # 掩码token用于节点特征掩蔽
+        self.mask_token = nn.Parameter(torch.zeros(1, node_feat_dim))
         
         # 重构头：从隐藏表示重构原始节点特征
         self.reconstruction_head = nn.Sequential(
@@ -122,7 +122,7 @@ class EdgeFlipMAELoss(nn.Module):
         
         # mask token替换
         if len(token_indices) > 0:
-            masked_x[token_indices] = self.mask_token.to(x.device)
+            masked_x[token_indices] = self.mask_token
         
         return masked_x, mask_indices
     
@@ -223,8 +223,8 @@ class EdgeFlipMAE(PreTrain):
             labels_tensor[test_indices]
         )
         
-        # 图数据：统一到模型设备
-        self.graph_data = graph_data.to(self.device)
+        # 图数据
+        self.graph_data = graph_data
         
         print(f"数据加载完成: 训练集 {len(self.train_dataset)}, "
               f"验证集 {len(self.val_dataset)}, 测试集 {len(self.test_dataset)}")
@@ -409,9 +409,6 @@ class EdgeFlipMAE(PreTrain):
         
         edge_pairs_tensor = torch.tensor(edge_pairs, dtype=torch.long).to(self.device)
         
-        # 确保图数据在模型设备
-        graph_data = graph_data.to(self.device)
-        
         with torch.no_grad():
             # 获取节点嵌入
             node_embeddings = self.encoder(x=graph_data.x, edge_index=graph_data.edge_index)
@@ -427,26 +424,26 @@ class EdgeFlipMAE(PreTrain):
         return probs.cpu().numpy()
     
     def predict_graph_with_decisions_with_get_all_edges(self, graph_data, threshold=0.5):
-            """预测图中所有边的翻转情况并给出决策"""
-            # 获取所有边对
-            edge_index = graph_data.edge_index
-            edge_pairs = edge_index.t().cpu().numpy()  # [num_edges, 2]
-            
-            # 预测翻转概率
-            flip_probs = self.predict_edge_flips(edge_pairs, graph_data)
-            
-            # 基于阈值做决策
-            flip_decisions = flip_probs > threshold
-            
-            return {
-                'edge_pairs': edge_pairs,
-                'flip_probabilities': flip_probs,
-                'flip_decisions': flip_decisions,
-                'num_edges': len(edge_pairs),
-                'num_flipped': np.sum(flip_decisions),
-                'flip_ratio': np.mean(flip_decisions),
-                'avg_flip_prob': np.mean(flip_probs)
-            }
+        """预测图中所有边的翻转情况并给出决策"""
+        # 获取所有边对
+        edge_index = graph_data.edge_index
+        edge_pairs = edge_index.t().cpu().numpy()  # [num_edges, 2]
+        
+        # 预测翻转概率
+        flip_probs = self.predict_edge_flips(edge_pairs, graph_data)
+        
+        # 基于阈值做决策
+        flip_decisions = flip_probs > threshold
+        
+        return {
+            'edge_pairs': edge_pairs,
+            'flip_probabilities': flip_probs,
+            'flip_decisions': flip_decisions,
+            'num_edges': len(edge_pairs),
+            'num_flipped': np.sum(flip_decisions),
+            'flip_ratio': np.mean(flip_decisions),
+            'avg_flip_prob': np.mean(flip_probs)
+        }
 
 
     

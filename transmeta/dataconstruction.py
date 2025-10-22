@@ -13,11 +13,38 @@ def load_prog_data(path):
                         shape=tuple(data['adj_shape']))
     features = sp.csr_matrix((data['attr_data'], data['attr_indices'], data['attr_indptr']),
                              shape=tuple(data['attr_shape']))
-    labels = data['labels']
-    idx_train = data['idx_train']
-    idx_val = data['idx_val']
-    idx_test = data['idx_test']
-    return adj, features, labels, idx_train, idx_val, idx_test
+    # labels = data['labels']
+    # idx_train = data['idx_train']
+    # idx_val = data['idx_val']
+    # idx_test = data['idx_test']
+    return adj, features
+
+def ensure_undirected(adj):
+    adj = adj.tocsr()
+    adj = adj.maximum(adj.T)
+    adj.setdiag(0)
+    adj.eliminate_zeros()
+    adj.data[:] = 1
+    return adj
+
+def load_prog_data(path, make_undirected=True):
+    try:
+        data = np.load(path, allow_pickle=True)
+        if all(k in data for k in ['adj_data','adj_indices','adj_indptr','adj_shape']) and \
+           all(k in data for k in ['attr_data','attr_indices','attr_indptr','attr_shape']):
+            adj = sp.csr_matrix((data['adj_data'], data['adj_indices'], data['adj_indptr']),
+                                shape=tuple(data['adj_shape']))
+            features = sp.csr_matrix((data['attr_data'], data['attr_indices'], data['attr_indptr']),
+                                     shape=tuple(data['attr_shape']))
+            if make_undirected:
+                adj = ensure_undirected(adj)
+            return adj, features
+    except Exception:
+        pass
+    adj = sp.load_npz(path).tocsr()
+    if make_undirected:
+        adj = ensure_undirected(adj)
+    return adj, None
 
 def reduce_features_svd(features, n_components=100, random_state=42, do_scale=True):
     """

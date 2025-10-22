@@ -1,0 +1,12 @@
+{
+  "N_nodes": 2485,
+  "all_candidate_pairs": 3086370,
+  "pos_original": 50,
+  "neg_original": 3086320,
+  "pos_final": 50,
+  "neg_final": 150,
+  "pos_ratio": 0.25,
+  "max_neg_ratio": 3,
+  "keep_all": false,
+  "struct_feats": true
+}

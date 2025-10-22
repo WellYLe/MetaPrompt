@@ -19,8 +19,10 @@ from torch.nn.parameter import Parameter
 from tqdm import tqdm
 from deeprobust.graph import utils
 from deeprobust.graph.global_attack import BaseAttack
-
+from edge_flip_mae_example import load_and_predict_example
 from torch_geometric.utils import degree
+from deeprobust.graph.data import Dataset
+from deeprobust.graph.defense import GCN
 
 
 class BaseMeta(BaseAttack):
@@ -128,35 +130,35 @@ class BaseMeta(BaseAttack):
                                                                     ll_cutoff, undirected=self.undirected)
         return allowed_mask, current_ratio
 
-    def get_adj_score(self, adj_grad, modified_adj, ori_adj, ll_constraint, ll_cutoff, node_loss_weight=None):
-        #这个函数目前没用了
-        adj_meta_grad = adj_grad * (-2 * modified_adj + 1)
-        # Make sure that the minimum entry is 0.
-        adj_meta_grad = adj_meta_grad - adj_meta_grad.min()
-        # Filter self-loops
-        adj_meta_grad = adj_meta_grad - torch.diag(torch.diag(adj_meta_grad, 0))
-        # # Set entries to 0 that could lead to singleton nodes.
-        singleton_mask = self.filter_potential_singletons(modified_adj)
-        adj_meta_grad = adj_meta_grad *  singleton_mask
+    # def get_adj_score(self, adj_grad, modified_adj, ori_adj, ll_constraint, ll_cutoff, node_loss_weight=None):
+    #     #这个函数目前没用了
+    #     adj_meta_grad = adj_grad * (-2 * modified_adj + 1)
+    #     # Make sure that the minimum entry is 0.
+    #     adj_meta_grad = adj_meta_grad - adj_meta_grad.min()
+    #     # Filter self-loops
+    #     adj_meta_grad = adj_meta_grad - torch.diag(torch.diag(adj_meta_grad, 0))
+    #     # # Set entries to 0 that could lead to singleton nodes.
+    #     singleton_mask = self.filter_potential_singletons(modified_adj)
+    #     adj_meta_grad = adj_meta_grad *  singleton_mask
 
-        # 可选：按节点损失加权分数，将节点损失映射为边对权重
-        if node_loss_weight is not None:
-            # Normalize to [0,1] to keep scale reasonable
-            nlw = node_loss_weight
-            nlw = nlw - nlw.min()
-            denom = nlw.max() + 1e-12
-            nlw = nlw / denom if denom > 0 else nlw
-            # Build pair weight: average of endpoint weights
-            pair_weight = (nlw.view(-1, 1) + nlw.view(1, -1)) * 0.5
-            adj_meta_grad = adj_meta_grad * pair_weight
-            # Ensure self-loops stay zero
-            adj_meta_grad = adj_meta_grad - torch.diag(torch.diag(adj_meta_grad, 0))
+    #     # 可选：按节点损失加权分数，将节点损失映射为边对权重
+    #     if node_loss_weight is not None:
+    #         # Normalize to [0,1] to keep scale reasonable
+    #         nlw = node_loss_weight
+    #         nlw = nlw - nlw.min()
+    #         denom = nlw.max() + 1e-12
+    #         nlw = nlw / denom if denom > 0 else nlw
+    #         # Build pair weight: average of endpoint weights
+    #         pair_weight = (nlw.view(-1, 1) + nlw.view(1, -1)) * 0.5
+    #         adj_meta_grad = adj_meta_grad * pair_weight
+    #         # Ensure self-loops stay zero
+    #         adj_meta_grad = adj_meta_grad - torch.diag(torch.diag(adj_meta_grad, 0))
 
-        if ll_constraint:
-            allowed_mask, self.ll_ratio = self.log_likelihood_constraint(modified_adj, ori_adj, ll_cutoff)
-            allowed_mask = allowed_mask.to(self.device)
-            adj_meta_grad = adj_meta_grad * allowed_mask
-        return adj_meta_grad
+    #     if ll_constraint:
+    #         allowed_mask, self.ll_ratio = self.log_likelihood_constraint(modified_adj, ori_adj, ll_cutoff)
+    #         allowed_mask = allowed_mask.to(self.device)
+    #         adj_meta_grad = adj_meta_grad * allowed_mask
+    #     return adj_meta_grad
 
     def get_feature_score(self, feature_grad, modified_features):
         feature_meta_grad = feature_grad * (-2 * modified_features + 1)
@@ -189,6 +191,8 @@ class GPF(torch.nn.Module):
                   self.optimizer.step()  
                   total_loss += loss.item()  
             return total_loss / len(train_loader) 
+        
+############TODO####################################################
         def gnntemp(self, weights, biases, x, edge_index, batch, prompt = None, prompt_type = None):
             for ix, w in enumerate(weights):
                 b = biases[ix] if self.with_bias else 0
@@ -196,6 +200,7 @@ class GPF(torch.nn.Module):
                 if self.with_relu:
                     x = F.relu(x)
             return x
+############TODO#####################################################
 class Metattack(BaseMeta):
     """Meta attack. Adversarial Attacks on Graph Neural Networks
     via Meta Learning, ICLR 2019.
@@ -282,102 +287,7 @@ class Metattack(BaseMeta):
                 b.data.uniform_(-stdv, stdv)
                 v.data.fill_(0)
 
-    def inner_train(self, features, adj_norm, idx_train, idx_unlabeled, labels):#inner_train改成prompt_train
-        self._initialize()
-
-        for ix in range(len(self.hidden_sizes) + 1):
-            self.weights[ix] = self.weights[ix].detach()
-            self.weights[ix].requires_grad = True
-            self.w_velocities[ix] = self.w_velocities[ix].detach()
-            self.w_velocities[ix].requires_grad = True
-
-            if self.with_bias:
-                self.biases[ix] = self.biases[ix].detach()
-                self.biases[ix].requires_grad = True
-                self.b_velocities[ix] = self.b_velocities[ix].detach()
-                self.b_velocities[ix].requires_grad = True
-
-        for j in range(self.train_iters):
-            hidden = features
-            for ix, w in enumerate(self.weights):
-                b = self.biases[ix] if self.with_bias else 0
-                if self.sparse_features:
-                    hidden = adj_norm @ torch.spmm(hidden, w) + b
-                else:
-                    hidden = adj_norm @ hidden @ w + b
-
-                if self.with_relu and ix != len(self.weights) - 1:
-                    hidden = F.relu(hidden)
-
-            output = F.log_softmax(hidden, dim=1)
-            loss_labeled = F.nll_loss(output[idx_train], labels[idx_train])
-
-            weight_grads = torch.autograd.grad(loss_labeled, self.weights, create_graph=True)
-            self.w_velocities = [self.momentum * v + g for v, g in zip(self.w_velocities, weight_grads)]
-            if self.with_bias:
-                bias_grads = torch.autograd.grad(loss_labeled, self.biases, create_graph=True)
-                self.b_velocities = [self.momentum * v + g for v, g in zip(self.b_velocities, bias_grads)]
-
-            self.weights = [w - self.lr * v for w, v in zip(self.weights, self.w_velocities)]
-            if self.with_bias:
-                self.biases = [b - self.lr * v for b, v in zip(self.biases, self.b_velocities)]
-    # def inner_train_but_prompt(self, features, adj_norm, idx_train, idx_unlabeled, labels):
-    #      pretrained_gnn.eval()   # 冻结模型
-    #     for param in pretrained_gnn.parameters():
-    #         param.requires_grad = False
-
-    #     x = data.x
-    #     edge_index = data.edge_index
-
-    #     x_prompted = gpf(x)     # 加上图提示
-    #     out = pretrained_gnn(x_prompted, edge_index)
-    #     loss = F.cross_entropy(out[data.train_mask], data.y[data.train_mask])
-
-    #     optimizer.zero_grad()
-    #     loss.backward()
-    #     optimizer.step()
-
-    #     return loss.item()
-    #      这是受害者模型冻结
-
-        
-
-        
-    def get_meta_grad(self, features, adj_norm, idx_train, idx_unlabeled, labels, labels_self_training):
-        #这个函数也不再用了，所有的梯度计算都在GPF里面集成
-        hidden = features
-        for ix, w in enumerate(self.weights):
-            b = self.biases[ix] if self.with_bias else 0
-            if self.sparse_features:
-                hidden = adj_norm @ torch.spmm(hidden, w) + b
-            else:
-                hidden = adj_norm @ hidden @ w + b
-            if self.with_relu and ix != len(self.weights) - 1:
-                hidden = F.relu(hidden)
-
-        output = F.log_softmax(hidden, dim=1)
-
-        loss_labeled = F.nll_loss(output[idx_train], labels[idx_train])
-        loss_unlabeled = F.nll_loss(output[idx_unlabeled], labels_self_training[idx_unlabeled])
-        loss_test_val = F.nll_loss(output[idx_unlabeled], labels[idx_unlabeled])
-
-        if self.lambda_ == 1:
-            attack_loss = loss_labeled
-        elif self.lambda_ == 0:
-            attack_loss = loss_unlabeled
-        else:
-            attack_loss = self.lambda_ * loss_labeled + (1 - self.lambda_) * loss_unlabeled
-
-        print('GCN loss on unlabled data: {}'.format(loss_test_val.item()))
-        print('GCN acc on unlabled data: {}'.format(utils.accuracy(output[idx_unlabeled], labels[idx_unlabeled]).item()))
-        print('attack loss: {}'.format(attack_loss.item()))
-
-        adj_grad, feature_grad = None, None
-        if self.attack_structure:
-            adj_grad = torch.autograd.grad(attack_loss, self.adj_changes, retain_graph=True)[0]
-        if self.attack_features:
-            feature_grad = torch.autograd.grad(attack_loss, self.feature_changes, retain_graph=True)[0]
-        return adj_grad, feature_grad
+   
     def pretrainGNNGPL(self):
         self.prompt = GPF(self.input_dim).to(self.device)#初始化prompt
         out = self.prompt.add(self.modified_adj)#获得prompt层的嵌入表示
@@ -421,6 +331,21 @@ class Metattack(BaseMeta):
         self.initialize_gnn()
         self.first_train(clean_features, clean_adj, idx_train, idx_unlabeled, labels)
         #这里在clean graph上训练GCN
+        # 加载 cora 数据集
+        data = Dataset(root='/tmp/', name='cora')
+        adj, features, labels = data.adj, data.features, data.labels
+        idx_train, idx_val, idx_test = data.idx_train, data.idx_val, data.idx_test
+
+        # 初始化并训练两层 GCN
+        gcn_model = GCN(nfeat=features.shape[1],
+                          nhid=16,
+                          nclass=labels.max().item() + 1,
+                          dropout=0.5,
+                          with_relu=True,
+                          with_bias=True,
+                          device=self.device).to(self.device)
+
+        gcn_model.fit(features, adj, labels, idx_train, idx_val, patience=30)
         self.answering =  torch.nn.Sequential(torch.nn.Linear(self.hid_dim, self.output_dim),
                                     torch.nn.Softmax(dim=1)).to(self.device) 
         self.initialize_prompt()
