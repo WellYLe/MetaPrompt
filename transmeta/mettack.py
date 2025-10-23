@@ -6,9 +6,10 @@
 """
 import sys
 import os
-
 from DeepRobust.examples.graph.test_visualization import clean_adj
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+
 import math
 import numpy as np
 import scipy.sparse as sp
@@ -17,12 +18,19 @@ from torch import optim
 from torch.nn import functional as F
 from torch.nn.parameter import Parameter
 from tqdm import tqdm
-from deeprobust.graph import utils
-from deeprobust.graph.global_attack import BaseAttack
+
+# 设置DeepRobust路径并添加到Python路径中
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'DeepRobust'))
+sys.path.insert(0, REPO_ROOT)
+
+# 现在可以正确导入deeprobust包
+from DeepRobust.deeprobust.graph import utils
+from DeepRobust.deeprobust.graph.global_attack import BaseAttack
+from DeepRobust.deeprobust.graph.data import Dataset
 from edge_flip_mae_example import load_and_predict_example
 from torch_geometric.utils import degree
-from deeprobust.graph.data import Dataset
-from deeprobust.graph.defense import GCN
+
+from DeepRobust.deeprobust.graph.defense import GCN, GAT
 
 
 
@@ -49,12 +57,12 @@ class BaseMeta(BaseAttack):
         whether the graph is undirected
     device: str
         'cpu' or 'cuda'
-    victim: str
-        victim model name, e.g. 'GCN'
+
+
 
     """
 
-    def __init__(self, model=None, nnodes=None, feature_shape=None, lambda_=0.5, attack_structure=True, attack_features=False, undirected=True, device='cpu', victim=None):
+    def __init__(self, model=None, nnodes=None, feature_shape=None, lambda_=0.5, attack_structure=True, attack_features=False, undirected=True, device='cpu'):
 
         super(BaseMeta, self).__init__(model, nnodes, attack_structure, attack_features, device)
         self.lambda_ = lambda_
@@ -176,6 +184,8 @@ class GPF(torch.nn.Module):
                     x = F.relu(x)
             return x
 ############TODO#####################################################
+
+
 class Metattack(BaseMeta):
     """Meta attack. Adversarial Attacks on Graph Neural Networks
     via Meta Learning, ICLR 2019.
@@ -206,38 +216,38 @@ class Metattack(BaseMeta):
     """
 
     def __init__(self, model, nnodes, feature_shape=None, attack_structure=True, attack_features=False, undirected=True, 
-                 device='cpu', with_bias=False, lambda_=0.5, train_iters=100, lr=0.1, momentum=0.9, victim=None):
+                 device='cpu', with_bias=False, lambda_=0.5, train_iters=100, lr=0.1, momentum=0.9):
 
         super(Metattack, self).__init__(model, nnodes, feature_shape, lambda_, attack_structure, attack_features, undirected, device)
-        self.momentum = momentum
+        self.momentum = momentum# 动量因子
         self.lr = lr
-        self.train_iters = train_iters
-        self.with_bias = with_bias
+        self.train_iters = train_iters# 训练迭代次数
+        self.with_bias = with_bias# 是否包含偏置项
 
-        self.weights = []
-        self.biases = []
-        self.w_velocities = []
-        self.b_velocities = []
+        self.weights = []# 模型权重列表
+        self.biases = []# 模型偏置项列表
+        self.w_velocities = []# 权重动量列表
+        self.b_velocities = []# 偏置项动量列表
 
-        self.hidden_sizes = self.surrogate.hidden_sizes
-        self.nfeat = self.surrogate.nfeat
-        self.nclass = self.surrogate.nclass
-        self.victim = victim
+        self.hidden_sizes = self.surrogate.hidden_sizes# 隐藏层大小列表
+        self.nfeat = self.surrogate.nfeat# 输入特征维度
+        self.nclass = self.surrogate.nclass# 输出类别数
+        self.model = model# 受害者模型
 
-        previous_size = self.nfeat
+        previous_size = self.nfeat# 上一层的特征维度
         for ix, nhid in enumerate(self.hidden_sizes):
-            weight = Parameter(torch.FloatTensor(previous_size, nhid).to(device))
+            weight = Parameter(torch.FloatTensor(previous_size, nhid).to(device))# 隐藏层权重
             w_velocity = torch.zeros(weight.shape).to(device)
-            self.weights.append(weight)
+            self.weights.append(weight)# 隐藏层权重
             self.w_velocities.append(w_velocity)
 
-            if self.with_bias:
+            if self.with_bias:# 是否包含偏置项
                 bias = Parameter(torch.FloatTensor(nhid).to(device))
                 b_velocity = torch.zeros(bias.shape).to(device)
                 self.biases.append(bias)
                 self.b_velocities.append(b_velocity)
 
-            previous_size = nhid
+            previous_size = nhid# 当前层的特征维度
 
         output_weight = Parameter(torch.FloatTensor(previous_size, self.nclass).to(device))
         output_w_velocity = torch.zeros(output_weight.shape).to(device)
@@ -271,19 +281,9 @@ class Metattack(BaseMeta):
         out = load_model(out, self.gnnPath)#用节点嵌入再去查阅我预训练的输出
         return out
     
-    def first_train_victim(self, clean_features, clean_adj, idx_train, idx_unlabeled, labels):
-        ''' test on GCN '''
-        # adj = normalize_adj_tensor(adj)
-        self.victim = GCN(nfeat=clean_features.shape[1],
-                nhid=args.hidden,
-                nclass=labels.max().item() + 1,
-                dropout=args.dropout, device=device)
-        self.victim.fit(clean_features, clean_adj, labels, idx_train) # train without model picking
-        # gcn.fit(features, adj, labels, idx_train, idx_val) # train with validation model picking
-        output = self.victim.output.cpu()
-        loss_test = F.nll_loss(output[idx_test], labels[idx_test])
-        acc_test = accuracy(output[idx_test], labels[idx_test])
-        return acc_test.item()  
+
+        
+ 
         
     def attack(self, ori_features, ori_adj, labels, idx_train, idx_unlabeled, n_perturbations, ll_constraint=True, ll_cutoff=0.004):
         """Generate n_perturbations on the input graph.
@@ -318,13 +318,15 @@ class Metattack(BaseMeta):
         labels_self_training = self.self_training_label(labels, idx_train)# 自训练标签
         modified_adj = ori_adj# 复制原始邻接矩阵
         modified_features = ori_features# 复制原始特征矩阵
-        self.first_train_victim(ori_features, ori_adj, idx_train, idx_unlabeled, labels)
+        self.surrogate = GCN(nfeat=features.shape[1], nclass=labels.max().item()+1,
+            nhid=16, dropout=0, with_relu=False, with_bias=False, device='cpu').to('cpu')
+        self.surrogate.fit(features, adj_norm, labels, idx_train, idx_unlabeled, patience=30)
         #这里在clean graph上训练GCN
         #加载 cora 数据集
         data = Dataset(root='/tmp/', name='cora')
         adj, features, labels = data.adj, data.features, data.labels
         idx_train, idx_val, idx_test = data.idx_train, data.idx_val, data.idx_test
-#####################CHANGED################################
+#####################FINISH TRAINING SURROGATE MODEL################################
         # 初始化并训练两层 GCN
         gcn_model = GCN(nfeat=features.shape[1],
                           nhid=16,
