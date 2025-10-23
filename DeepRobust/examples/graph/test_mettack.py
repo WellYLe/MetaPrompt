@@ -230,7 +230,7 @@ class EdgeFlipDataset(Dataset):
 def export_and_report_dataset(adj_before, modified_adj, features, args,
                               max_neg_ratio=3, keep_all=False, rng_seed=0):
     data_dict = build_edge_change_dataset(adj_before, modified_adj, features,
-                                         max_neg_ratio=3, keep_all=False,
+                                         max_neg_ratio=1, keep_all=False,
                                          add_structural_features=True)
     # 保存 npz
     save_path = f"{args.dataset}_edgeflip_dataset_ptbrate{int(args.ptb_rate*100):03d}.npz"

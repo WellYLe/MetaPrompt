@@ -1,0 +1,5 @@
+python test_integration.py
+
+
+我这周写了一个给不同子图添加扰动并支持batch化的demo，
+你后续准备写代码的时候可以参照这个demo。当然如果你子图全都塞得下也可以不用batch化

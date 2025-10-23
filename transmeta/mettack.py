@@ -25,6 +25,7 @@ from deeprobust.graph.data import Dataset
 from deeprobust.graph.defense import GCN
 
 
+
 class BaseMeta(BaseAttack):
     """元攻击抽象基类. Adversarial Attacks on Graph Neural
     Networks via Meta Learning, ICLR 2019,
@@ -48,10 +49,12 @@ class BaseMeta(BaseAttack):
         whether the graph is undirected
     device: str
         'cpu' or 'cuda'
+    victim: str
+        victim model name, e.g. 'GCN'
 
     """
 
-    def __init__(self, model=None, nnodes=None, feature_shape=None, lambda_=0.5, attack_structure=True, attack_features=False, undirected=True, device='cpu'):
+    def __init__(self, model=None, nnodes=None, feature_shape=None, lambda_=0.5, attack_structure=True, attack_features=False, undirected=True, device='cpu', victim=None):
 
         super(BaseMeta, self).__init__(model, nnodes, attack_structure, attack_features, device)
         self.lambda_ = lambda_
@@ -130,35 +133,7 @@ class BaseMeta(BaseAttack):
                                                                     ll_cutoff, undirected=self.undirected)
         return allowed_mask, current_ratio
 
-    # def get_adj_score(self, adj_grad, modified_adj, ori_adj, ll_constraint, ll_cutoff, node_loss_weight=None):
-    #     #这个函数目前没用了
-    #     adj_meta_grad = adj_grad * (-2 * modified_adj + 1)
-    #     # Make sure that the minimum entry is 0.
-    #     adj_meta_grad = adj_meta_grad - adj_meta_grad.min()
-    #     # Filter self-loops
-    #     adj_meta_grad = adj_meta_grad - torch.diag(torch.diag(adj_meta_grad, 0))
-    #     # # Set entries to 0 that could lead to singleton nodes.
-    #     singleton_mask = self.filter_potential_singletons(modified_adj)
-    #     adj_meta_grad = adj_meta_grad *  singleton_mask
 
-    #     # 可选：按节点损失加权分数，将节点损失映射为边对权重
-    #     if node_loss_weight is not None:
-    #         # Normalize to [0,1] to keep scale reasonable
-    #         nlw = node_loss_weight
-    #         nlw = nlw - nlw.min()
-    #         denom = nlw.max() + 1e-12
-    #         nlw = nlw / denom if denom > 0 else nlw
-    #         # Build pair weight: average of endpoint weights
-    #         pair_weight = (nlw.view(-1, 1) + nlw.view(1, -1)) * 0.5
-    #         adj_meta_grad = adj_meta_grad * pair_weight
-    #         # Ensure self-loops stay zero
-    #         adj_meta_grad = adj_meta_grad - torch.diag(torch.diag(adj_meta_grad, 0))
-
-    #     if ll_constraint:
-    #         allowed_mask, self.ll_ratio = self.log_likelihood_constraint(modified_adj, ori_adj, ll_cutoff)
-    #         allowed_mask = allowed_mask.to(self.device)
-    #         adj_meta_grad = adj_meta_grad * allowed_mask
-    #     return adj_meta_grad
 
     def get_feature_score(self, feature_grad, modified_features):
         feature_meta_grad = feature_grad * (-2 * modified_features + 1)
@@ -230,7 +205,8 @@ class Metattack(BaseMeta):
 
     """
 
-    def __init__(self, model, nnodes, feature_shape=None, attack_structure=True, attack_features=False, undirected=True, device='cpu', with_bias=False, lambda_=0.5, train_iters=100, lr=0.1, momentum=0.9):
+    def __init__(self, model, nnodes, feature_shape=None, attack_structure=True, attack_features=False, undirected=True, 
+                 device='cpu', with_bias=False, lambda_=0.5, train_iters=100, lr=0.1, momentum=0.9, victim=None):
 
         super(Metattack, self).__init__(model, nnodes, feature_shape, lambda_, attack_structure, attack_features, undirected, device)
         self.momentum = momentum
@@ -246,6 +222,7 @@ class Metattack(BaseMeta):
         self.hidden_sizes = self.surrogate.hidden_sizes
         self.nfeat = self.surrogate.nfeat
         self.nclass = self.surrogate.nclass
+        self.victim = victim
 
         previous_size = self.nfeat
         for ix, nhid in enumerate(self.hidden_sizes):
@@ -293,7 +270,20 @@ class Metattack(BaseMeta):
         out = self.prompt.add(self.modified_adj)#获得prompt层的嵌入表示
         out = load_model(out, self.gnnPath)#用节点嵌入再去查阅我预训练的输出
         return out
-        
+    
+    def first_train_victim(self, clean_features, clean_adj, idx_train, idx_unlabeled, labels):
+        ''' test on GCN '''
+        # adj = normalize_adj_tensor(adj)
+        self.victim = GCN(nfeat=clean_features.shape[1],
+                nhid=args.hidden,
+                nclass=labels.max().item() + 1,
+                dropout=args.dropout, device=device)
+        self.victim.fit(clean_features, clean_adj, labels, idx_train) # train without model picking
+        # gcn.fit(features, adj, labels, idx_train, idx_val) # train with validation model picking
+        output = self.victim.output.cpu()
+        loss_test = F.nll_loss(output[idx_test], labels[idx_test])
+        acc_test = accuracy(output[idx_test], labels[idx_test])
+        return acc_test.item()  
         
     def attack(self, ori_features, ori_adj, labels, idx_train, idx_unlabeled, n_perturbations, ll_constraint=True, ll_cutoff=0.004):
         """Generate n_perturbations on the input graph.
@@ -328,14 +318,13 @@ class Metattack(BaseMeta):
         labels_self_training = self.self_training_label(labels, idx_train)# 自训练标签
         modified_adj = ori_adj# 复制原始邻接矩阵
         modified_features = ori_features# 复制原始特征矩阵
-        self.initialize_gnn()
-        self.first_train(clean_features, clean_adj, idx_train, idx_unlabeled, labels)
+        self.first_train_victim(ori_features, ori_adj, idx_train, idx_unlabeled, labels)
         #这里在clean graph上训练GCN
-        # 加载 cora 数据集
+        #加载 cora 数据集
         data = Dataset(root='/tmp/', name='cora')
         adj, features, labels = data.adj, data.features, data.labels
         idx_train, idx_val, idx_test = data.idx_train, data.idx_val, data.idx_test
-
+#####################CHANGED################################
         # 初始化并训练两层 GCN
         gcn_model = GCN(nfeat=features.shape[1],
                           nhid=16,
@@ -350,6 +339,8 @@ class Metattack(BaseMeta):
                                     torch.nn.Softmax(dim=1)).to(self.device) 
         self.initialize_prompt()
         self.initialize_optimizer()
+        
+#####################CHANGED################################        
         
         for i in tqdm(range(n_perturbations), desc="Perturbing graph"):
             if self.attack_structure:
