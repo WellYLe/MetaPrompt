@@ -20,8 +20,8 @@ from torch.nn.parameter import Parameter
 from tqdm import tqdm
 
 # 设置DeepRobust路径并添加到Python路径中
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'DeepRobust'))
-sys.path.insert(0, REPO_ROOT)
+# REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'DeepRobust'))
+# sys.path.insert(0, REPO_ROOT)
 
 # 现在可以正确导入deeprobust包
 from DeepRobust.deeprobust.graph import utils
@@ -30,8 +30,8 @@ from DeepRobust.deeprobust.graph.data import Dataset
 from edge_flip_mae_example import load_and_predict_example
 from torch_geometric.utils import degree
 
-from DeepRobust.deeprobust.graph.defense import GCN, GAT
-
+from DeepRobust.deeprobust.graph.defense.gcn import GCN
+from EdgeFlipMAE import EdgeFlipMAE
 
 
 class BaseMeta(BaseAttack):
@@ -216,7 +216,8 @@ class Metattack(BaseMeta):
     """
 
     def __init__(self, model, nnodes, feature_shape=None, attack_structure=True, attack_features=False, undirected=True, 
-                 device='cpu', with_bias=False, lambda_=0.5, train_iters=100, lr=0.1, momentum=0.9):
+                 device='cpu', with_bias=False, lambda_=0.5, train_iters=100, lr=0.1, momentum=0.9,attacker_encoder=None,attacker_classifier=None,
+                 prompt_type = None):
 
         super(Metattack, self).__init__(model, nnodes, feature_shape, lambda_, attack_structure, attack_features, undirected, device)
         self.momentum = momentum# 动量因子
@@ -233,6 +234,9 @@ class Metattack(BaseMeta):
         self.nfeat = self.surrogate.nfeat# 输入特征维度
         self.nclass = self.surrogate.nclass# 输出类别数
         self.model = model# 受害者模型
+        self.attacker_encoder = attacker_encoder# 攻击模型编码器
+        self.attacker_classifier = attacker_classifier# 攻击模型分类器
+        self.prompt_type = prompt_type# prompt类型
 
         previous_size = self.nfeat# 上一层的特征维度
         for ix, nhid in enumerate(self.hidden_sizes):
@@ -327,22 +331,22 @@ class Metattack(BaseMeta):
         adj, features, labels = data.adj, data.features, data.labels
         idx_train, idx_val, idx_test = data.idx_train, data.idx_val, data.idx_test
 #####################FINISH TRAINING SURROGATE MODEL################################
-        # 初始化并训练两层 GCN
-        gcn_model = GCN(nfeat=features.shape[1],
-                          nhid=16,
-                          nclass=labels.max().item() + 1,
-                          dropout=0.5,
-                          with_relu=True,
-                          with_bias=True,
-                          device=self.device).to(self.device)
-
-        gcn_model.fit(features, adj, labels, idx_train, idx_val, patience=30)
+        #这里导入在上游训练的判断图的Attacker模型，用于生成扰动
+        attacker = EdgeFlipMAE(ori_adj, ori_features, labels, idx_train, idx_unlabeled, self.device)
+        attacker.load_model(self.attacker_encoder, self.attacker_classifier)
+        
+        # modified_adj = attacker.modified_adj# 扰动后的邻接矩阵
+        # modified_features = attacker.modified_features# 扰动后的特征矩阵
+        
         self.answering =  torch.nn.Sequential(torch.nn.Linear(self.hid_dim, self.output_dim),
                                     torch.nn.Softmax(dim=1)).to(self.device) 
-        self.initialize_prompt()
+        self.prompt = GPF(self.input_dim).to(self.device)
+        
+        #为什么好像别的文件调用self.prompt的时候都不需要再init函数中声明这个变量？
+        
         self.initialize_optimizer()
         
-#####################CHANGED################################        
+#####################FINISH INITIALIZING THE PROMPT################################        
         
         for i in tqdm(range(n_perturbations), desc="Perturbing graph"):
             if self.attack_structure:
