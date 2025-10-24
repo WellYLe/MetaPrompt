@@ -382,17 +382,19 @@ class Metattack(BaseMeta):
                 modified_features = ori_features + self.feature_changes
             
             adj_norm = utils.normalize_adj_tensor(modified_adj)# 归一化扰动后的邻接矩阵
-            adj_grad = get_grad(self.inner_Predict(modified_features, adj_norm, idx_train, idx_unlabeled, labels))# 用GCN模型预测并求梯度
+            adj_grad = get_grad(self.surrogate.predict(modified_features, adj_norm, idx_train, idx_unlabeled, labels))# 用GCN模型预测并求梯度
             #这里不训练Victim，只是用预训练好的GPL来预测，而不更新GNN参数
-            GPFTrain(adj_grad)#在这个里面p被更新
+            GPFTrain(adj_grad)#在这个里面p被更新。  
+            #这里还没做，因为我还没实现prompt的训练
             #这里用Victim的反馈来求梯度，并且更新prompt参数
-            #adj_grad, feature_grad = self.get_meta_grad(modified_features, adj_norm, idx_train, idx_unlabeled, labels, labels_self_training)# 计算元梯度    
-
+            
             adj_meta_score = torch.tensor(0.0).to(self.device)
             feature_meta_score = torch.tensor(0.0).to(self.device)
             if self.attack_structure:
                 #adj_meta_score = self.get_adj_score(adj_grad, modified_adj, ori_adj, ll_constraint, ll_cutoff)
-                adj_meta_score = self.pretrainGNNGPL(modified_adj)#返回一个矩阵，意味着此时带有提示的GNN对每条边的预测结果
+                adj_meta_score = attacker.predict_graph_with_decisions_with_get_all_edges(modified_adj)['flip_probabilities']
+                #返回一个矩阵，意味着此时带有提示的GNN对每条边的预测结果
+                #但是接受的参数还没对齐，可能需要写一个dataloader
                 
                 feature_meta_score = self.get_feature_score(feature_grad, modified_features)
             
