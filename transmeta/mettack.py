@@ -29,7 +29,7 @@ from DeepRobust.deeprobust.graph.global_attack import BaseAttack
 from DeepRobust.deeprobust.graph.data import Dataset
 from edge_flip_mae_example import load_and_predict_example
 from torch_geometric.utils import degree
-
+from torch_geometric.loader import DataLoader
 from DeepRobust.deeprobust.graph.defense.gcn import GCN
 from EdgeFlipMAE import EdgeFlipMAE
 
@@ -159,7 +159,7 @@ class GPF(torch.nn.Module):
         def add(self, x: torch.Tensor):
             return x + self.global_emb
         
-        def GPFTrain(self, train_loader):
+        def GPFTrain(self, train_loader,sur_loss):#怎么疑似可以不用换dataloader？
             self.prompt.train()
             total_loss = 0.0 
             
@@ -167,23 +167,15 @@ class GPF(torch.nn.Module):
                   self.optimizer.zero_grad() 
                   batch = batch.to(self.device)
                   batch.x = self.prompt.add(batch.x)
-                  out = self.gnntemp(self.weights,self.biases, batch.x, batch.edge_index, batch.batch, prompt = self.prompt, prompt_type = self.prompt_type)
+                  out = self.surrogate.predict(self.weights,self.biases, batch.x, batch.edge_index, batch.batch, prompt = self.prompt, prompt_type = self.prompt_type)
                   out = self.answering(out)
-                  loss = self.criterion(out, batch.y)  
+                  loss = sur_loss(out, batch.y) 
                   loss.backward()  
                   self.optimizer.step()  
                   total_loss += loss.item()  
             return total_loss / len(train_loader) 
         
-############TODO####################################################
-        def gnntemp(self, weights, biases, x, edge_index, batch, prompt = None, prompt_type = None):
-            for ix, w in enumerate(weights):
-                b = biases[ix] if self.with_bias else 0
-                x = self.gnnlayer(x, edge_index, w, b)
-                if self.with_relu:
-                    x = F.relu(x)
-            return x
-############TODO#####################################################
+
 
 class Metattack(BaseMeta):
     """Meta attack. Adversarial Attacks on Graph Neural Networks
@@ -370,7 +362,7 @@ class Metattack(BaseMeta):
         self.gnn = attacker
         #为什么好像别的文件调用self.prompt的时候都不需要再init函数中声明这个变量？
         self.initialize_optimizer()
-        
+        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
 #####################FINISH INITIALIZING THE PROMPT################################     
    
 #####################FOLLOWING BEGIN TO LOAD THE DATA################################          
@@ -382,10 +374,10 @@ class Metattack(BaseMeta):
                 modified_features = ori_features + self.feature_changes
             
             adj_norm = utils.normalize_adj_tensor(modified_adj)# 归一化扰动后的邻接矩阵
-            adj_grad = get_grad(self.surrogate.predict(modified_features, adj_norm, idx_train, idx_unlabeled, labels))# 用GCN模型预测并求梯度
-            #这里不训练Victim，只是用预训练好的GPL来预测，而不更新GNN参数
-            GPFTrain(adj_grad)#在这个里面p被更新。  
-            #这里还没做，因为我还没实现prompt的训练
+            #adj_grad = torch.autograd.grad(self.surrogate.predict(modified_features, adj_norm, idx_train, idx_unlabeled, labels), modified_adj, retain_graph=True)[0]# 用GCN模型预测并求梯度
+            #这个地方没写怎么获得梯度的，但是我猜应该是用了torch.autograd.grad来获得的
+            GPFTrain(train_loader,self.surrogate.criterion)#在这个里面p被更新。
+            #这里微调一下即可，因为训练的数据不变
             #这里用Victim的反馈来求梯度，并且更新prompt参数
             
             adj_meta_score = torch.tensor(0.0).to(self.device)
@@ -393,6 +385,7 @@ class Metattack(BaseMeta):
             if self.attack_structure:
                 #adj_meta_score = self.get_adj_score(adj_grad, modified_adj, ori_adj, ll_constraint, ll_cutoff)
                 adj_meta_score = attacker.predict_graph_with_decisions_with_get_all_edges(modified_adj)['flip_probabilities']
+                #好像只剩这里了！！！！
                 #返回一个矩阵，意味着此时带有提示的GNN对每条边的预测结果
                 #但是接受的参数还没对齐，可能需要写一个dataloader
                 
