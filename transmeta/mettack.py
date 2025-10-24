@@ -185,7 +185,6 @@ class GPF(torch.nn.Module):
             return x
 ############TODO#####################################################
 
-
 class Metattack(BaseMeta):
     """Meta attack. Adversarial Attacks on Graph Neural Networks
     via Meta Learning, ICLR 2019.
@@ -278,7 +277,35 @@ class Metattack(BaseMeta):
                 b.data.uniform_(-stdv, stdv)
                 v.data.fill_(0)
 
-   
+    def initialize_optimizer(self):
+            if self.prompt_type == 'None':
+                if self.pre_train_model_path == 'None':
+                    model_param_group = []
+                    model_param_group.append({"params": self.gnn.parameters()})
+                    model_param_group.append({"params": self.answering.parameters()})
+                    self.optimizer = optim.Adam(model_param_group, lr=self.lr, weight_decay=self.wd)
+                else:
+                    model_param_group = []
+                    model_param_group.append({"params": self.gnn.parameters()})
+                    model_param_group.append({"params": self.answering.parameters()})
+                    self.optimizer = optim.Adam(model_param_group, lr=self.lr, weight_decay=self.wd)
+                    # self.optimizer = optim.Adam(self.answering.parameters(), lr=self.lr, weight_decay=self.wd)
+
+            elif self.prompt_type == 'All-in-one':
+                self.pg_opi = optim.Adam( self.prompt.parameters(), lr=1e-6, weight_decay= self.wd)
+                self.answer_opi = optim.Adam( self.answering.parameters(), lr=self.lr, weight_decay= self.wd)
+            elif self.prompt_type in ['GPF', 'GPF-plus']:
+                model_param_group = []
+                model_param_group.append({"params": self.prompt.parameters()})
+                model_param_group.append({"params": self.answering.parameters()})
+                self.optimizer = optim.Adam(model_param_group, lr=self.lr, weight_decay=self.wd)
+            elif self.prompt_type in ['Gprompt']:
+                self.pg_opi = optim.Adam(self.prompt.parameters(), lr=self.lr, weight_decay=self.wd)
+            elif self.prompt_type in ['GPPT']:
+                self.pg_opi = optim.Adam(self.prompt.parameters(), lr=2e-3, weight_decay=5e-4)
+            elif self.prompt_type == 'MultiGprompt':
+                self.optimizer = optim.Adam([*self.DownPrompt.parameters(),*self.feature_prompt.parameters()], lr=self.lr)
+
     def pretrainGNNGPL(self):
         self.prompt = GPF(self.input_dim).to(self.device)#初始化prompt
         out = self.prompt.add(self.modified_adj)#获得prompt层的嵌入表示
@@ -337,17 +364,16 @@ class Metattack(BaseMeta):
         
         # modified_adj = attacker.modified_adj# 扰动后的邻接矩阵
         # modified_features = attacker.modified_features# 扰动后的特征矩阵
-        
         self.answering =  torch.nn.Sequential(torch.nn.Linear(self.hid_dim, self.output_dim),
                                     torch.nn.Softmax(dim=1)).to(self.device) 
         self.prompt = GPF(self.input_dim).to(self.device)
-        
+        self.gnn = attacker
         #为什么好像别的文件调用self.prompt的时候都不需要再init函数中声明这个变量？
-        
         self.initialize_optimizer()
         
-#####################FINISH INITIALIZING THE PROMPT################################        
-        
+#####################FINISH INITIALIZING THE PROMPT################################     
+   
+#####################FOLLOWING BEGIN TO LOAD THE DATA################################          
         for i in tqdm(range(n_perturbations), desc="Perturbing graph"):
             if self.attack_structure:
                 modified_adj = self.get_modified_adj(ori_adj)# 更新扰动后的邻接矩阵
