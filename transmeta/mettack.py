@@ -9,7 +9,7 @@ import os
 from DeepRobust.examples.graph.test_visualization import clean_adj
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-
+from torch_geometric.utils import to_dense_adj
 import math
 import numpy as np
 import scipy.sparse as sp
@@ -18,6 +18,7 @@ from torch import optim
 from torch.nn import functional as F
 from torch.nn.parameter import Parameter
 from tqdm import tqdm
+from torch_geometric.data import Data
 
 # 设置DeepRobust路径并添加到Python路径中
 # REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'DeepRobust'))
@@ -148,10 +149,11 @@ class BaseMeta(BaseAttack):
         feature_meta_grad -= feature_meta_grad.min()
         return feature_meta_grad
 class GPF(torch.nn.Module):
-        def __init__(self, in_channels: int):
+        def __init__(self, in_channels: int,attacker=None):
             super(GPF, self).__init__()
             self.global_emb = torch.nn.Parameter(torch.Tensor(1,in_channels))
             self.reset_parameters()
+            self.attacker = attacker
 
         def reset_parameters(self):
             glorot(self.global_emb)
@@ -172,6 +174,27 @@ class GPF(torch.nn.Module):
                   loss = sur_loss(out, batch.y) 
                   loss.backward()  
                   self.optimizer.step()  
+                  total_loss += loss.item()  
+            return total_loss / len(train_loader) 
+        def GPFTrain1(self, train_graphs,sur_loss):
+            self.prompt.train()
+            total_loss = 0.0             
+            for batch in train_graphs:  
+                  self.optimizer.zero_grad() 
+                  batch = batch.to(self.device)
+                  batch.x = self.prompt.add(batch.x)
+                  batch.graph = Data(x=batch.x, edge_index=batch.edge_index)
+                  s = self.attacker.predict_graph_with_decisions_with_get_all_edges(batch.graph)['flip_probabilities']
+                  ori_adj = to_dense_adj(batch.edge_index, batch=batch.batch, max_num_nodes=batch.x.size(0))
+                  batch.adj = ori_adj * (torch.ones_like(ori_adj)-s)+(torch.ones_like(ori_adj)-ori_adj)*s
+                  #其实这里如果能改成edge_index的形式是否效率上会更好？对于取负样本是否会存在影响？
+                  #实际上最重要的修改是加边，那么就要考虑是否会少看到边
+                  out = self.surrogate.predict(batch.adj)
+                  out = self.answering(out)
+                  criterion = nn.BCEWithLogitsLoss()
+                  loss = criterion(out, batch.y)
+                  loss.backward()  
+                  self.optimizer.step()#这里应该只更新prompt的参数  
                   total_loss += loss.item()  
             return total_loss / len(train_loader) 
         
@@ -298,11 +321,7 @@ class Metattack(BaseMeta):
             elif self.prompt_type == 'MultiGprompt':
                 self.optimizer = optim.Adam([*self.DownPrompt.parameters(),*self.feature_prompt.parameters()], lr=self.lr)
 
-    def pretrainGNNGPL(self):
-        self.prompt = GPF(self.input_dim).to(self.device)#初始化prompt
-        out = self.prompt.add(self.modified_adj)#获得prompt层的嵌入表示
-        out = load_model(out, self.gnnPath)#用节点嵌入再去查阅我预训练的输出
-        return out
+
     
 
         
@@ -365,8 +384,11 @@ class Metattack(BaseMeta):
         train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
 #####################FINISH INITIALIZING THE PROMPT################################     
    
-#####################FOLLOWING BEGIN TO LOAD THE DATA################################          
+#####################FOLLOWING BEGIN TO ATTACK#####################################    
+#今天下午的核心任务是把所有的输入参数对齐，然后完成对整个图的y的预测
         for i in tqdm(range(n_perturbations), desc="Perturbing graph"):
+            #n个扰动过程实际上是n个子图输入再判断的过程————先试试这个
+            #或者是n轮的所有子图输入再输出的过程
             if self.attack_structure:
                 modified_adj = self.get_modified_adj(ori_adj)# 更新扰动后的邻接矩阵
 
@@ -376,19 +398,14 @@ class Metattack(BaseMeta):
             adj_norm = utils.normalize_adj_tensor(modified_adj)# 归一化扰动后的邻接矩阵
             #adj_grad = torch.autograd.grad(self.surrogate.predict(modified_features, adj_norm, idx_train, idx_unlabeled, labels), modified_adj, retain_graph=True)[0]# 用GCN模型预测并求梯度
             #这个地方没写怎么获得梯度的，但是我猜应该是用了torch.autograd.grad来获得的
-            GPFTrain(train_loader,self.surrogate.criterion)#在这个里面p被更新。
-            #这里微调一下即可，因为训练的数据不变
-            #这里用Victim的反馈来求梯度，并且更新prompt参数
-            
+            GPF.GPFTrain1(train_graphs)
+            #在这个里面p被更新，每一轮攻击实际上是用一整个图子图化后对GNN+GPL进行训练
             adj_meta_score = torch.tensor(0.0).to(self.device)
             feature_meta_score = torch.tensor(0.0).to(self.device)
             if self.attack_structure:
-                #adj_meta_score = self.get_adj_score(adj_grad, modified_adj, ori_adj, ll_constraint, ll_cutoff)
                 adj_meta_score = attacker.predict_graph_with_decisions_with_get_all_edges(modified_adj)['flip_probabilities']
-                #好像只剩这里了！！！！
                 #返回一个矩阵，意味着此时带有提示的GNN对每条边的预测结果
                 #但是接受的参数还没对齐，可能需要写一个dataloader
-                
                 feature_meta_score = self.get_feature_score(feature_grad, modified_features)
             
             if adj_meta_score.max() >= feature_meta_score.max():
