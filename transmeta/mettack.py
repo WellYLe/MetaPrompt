@@ -19,7 +19,8 @@ from torch.nn import functional as F
 from torch.nn.parameter import Parameter
 from tqdm import tqdm
 from torch_geometric.data import Data
-
+from utils import edge_index_to_adjacency_matrix,edge_index_to_sparse_matrix
+from Linearized_GCN import Linearized_GCN
 # 设置DeepRobust路径并添加到Python路径中
 # REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'DeepRobust'))
 # sys.path.insert(0, REPO_ROOT)
@@ -88,7 +89,60 @@ class BaseMeta(BaseAttack):
 
     def attack(self, adj, labels, n_perturbations):
         pass
+    def imitation_model_train(self, augmentation_list):
+        """
+        the reason why we should train an imitation model is that
+        when you use edge_index or torch.SparseTensor as input form of topology in pretrain model created by torch_geometric.nn
+        the gradients of adj can not be got.
+        Therefore, the imitation model will output the embeddings like pretrain model, but take
+        adj as input form of topology.
 
+        If you are interested in bridging the gap between deeoprobust(adj as input) and torch_geometric(edge_index as input),
+        see https://github.com/pyg-team/pytorch_geometric/issues/1511
+        https://github.com/DSE-MSU/DeepRobust/issues/118
+
+        But we still can not think a by-pass expect this function.
+        """
+        # we dont want there be so many hyper-parameters,
+        # So if you want, you can set surrogate_model, its layer_num and so on as class_number
+        self.Linearized_GCN = Linearized_GCN(self.input_dim, self.hid_dim).to(self.device)
+        adj_ori_ = copy.deepcopy(self.adj_ori.data.to('cpu'))
+        x_ = copy.deepcopy(self.x.data.to('cpu'))
+
+        # here comes an assumption that in the augmentation will probably used in the process of pretraining
+        # such as GCL DGI with augmentation
+        optimizer = torch.optim.Adam(self.Linearized_GCN.parameters(), lr=0.01, weight_decay=5e-4)
+        patience = 10
+        for augmentation_func in augmentation_list:
+            augmentation = augmentation_func(adj_ori_, x_, 0.2, self.undirected)
+            aug_adj, aug_feature = augmentation.augment()
+            aug_adj, aug_feature = aug_adj.to(self.device), aug_feature.to(self.device)
+            aug_edge_index_0, aug_edge_index_1 = torch.where(aug_adj == 1)
+            aug_edge_index = torch.stack([aug_edge_index_0, aug_edge_index_1], dim=0)
+            aug_adj_norm = self.normalize_adj_tensor(aug_adj)
+            train_loss_min = 1000000
+            cnt_wait = 0
+            for epoch in tqdm(range(100), desc="training the imitation model with " + augmentation.get_name()):
+                optimizer.zero_grad()
+                z1 = self.pretrain_gnn(aug_feature, aug_edge_index)
+                z2 = self.Linearized_GCN(aug_feature, aug_adj_norm)
+                z1 = F.normalize(z1, p=2, dim=1)
+                z2 = F.normalize(z2, p=2, dim=1)
+
+                loss = F.mse_loss(z1, z2)
+                loss.backward()
+                optimizer.step()
+
+                if train_loss_min > loss:
+                    train_loss_min = loss
+                    cnt_wait = 0
+                else:
+                    cnt_wait += 1
+                    if cnt_wait == patience:
+                        print('Early stopping at ' + str(epoch) + ' epoch!')
+                        break
+        self.Linearized_GCN.eval()  # replace pretrain_model with
+        
     def get_modified_adj(self, ori_adj):#不动，依旧如此，因为这里只是接受安排，然后给个结果
         adj_changes_square = self.adj_changes - torch.diag(torch.diag(self.adj_changes, 0))
         # ind = np.diag_indices(self.adj_changes.shape[0]) # this line seems useless
@@ -148,6 +202,7 @@ class BaseMeta(BaseAttack):
         feature_meta_grad = feature_grad * (-2 * modified_features + 1)
         feature_meta_grad -= feature_meta_grad.min()
         return feature_meta_grad
+
 class GPF(torch.nn.Module):
         def __init__(self, in_channels: int,attacker=None):
             super(GPF, self).__init__()
@@ -360,9 +415,9 @@ class Metattack(BaseMeta):
         labels_self_training = self.self_training_label(labels, idx_train)# 自训练标签
         modified_adj = ori_adj# 复制原始邻接矩阵
         modified_features = ori_features# 复制原始特征矩阵
-        self.surrogate = GCN(nfeat=features.shape[1], nclass=labels.max().item()+1,
+        self.surrogate = Linearized_GCN(nfeat=features.shape[1], nclass=labels.max().item()+1,
             nhid=16, dropout=0, with_relu=False, with_bias=False, device='cpu').to('cpu')
-        self.surrogate.fit(features, adj_norm, labels, idx_train, idx_unlabeled, patience=30)
+        self.surrogate.train(features, adj_norm, labels, idx_train, idx_unlabeled, patience=30)
         #这里在clean graph上训练GCN
         #加载 cora 数据集
         data = Dataset(root='/tmp/', name='cora')

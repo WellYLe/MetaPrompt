@@ -462,7 +462,7 @@ def prepare_classifier_input_from_dense(dense_adj_matrix, dense_node_embeddings,
         classify_all_possible_edges: 是否对所有可能的边进行分类 (默认True)
                                    - True: 包括邻接矩阵中值为0的边（不存在的边）
                                    - False: 只包括邻接矩阵中值>0的边（已存在的边）
-    
+ 
     Returns:
         dict: 包含以下键值对
             - 'edge_embeddings': torch.Tensor, shape [num_edges, 2*hid_dim]
@@ -874,9 +874,327 @@ def test_classifier_input_preparation():
     print("✓ 现在Classifier可以判断所有可能的边，包括邻接矩阵中值为0的边!")
 
 
+def predictions_to_dense_probability_matrix(predictions, edge_pairs, num_nodes, 
+                                         directed=False, fill_diagonal=0.0):
+    """
+    将边预测概率转换为稠密概率矩阵
+    
+    Args:
+        predictions: 边预测概率数组 [num_edges]
+        edge_pairs: 边对索引 [num_edges, 2]
+        num_nodes: 节点总数
+        directed: 是否为有向图
+        fill_diagonal: 对角线填充值 (自环概率)
+    
+    Returns:
+        np.ndarray: 稠密概率矩阵 [num_nodes, num_nodes]
+            - matrix[i,j] 表示边(i,j)翻转的概率
+            - 对于无向图，matrix[i,j] = matrix[j,i]
+    
+    Examples:
+        >>> predictions = np.array([0.8, 0.3, 0.9])
+        >>> edge_pairs = np.array([[0,1], [0,2], [1,2]])
+        >>> prob_matrix = predictions_to_dense_probability_matrix(
+        ...     predictions, edge_pairs, num_nodes=3
+        ... )
+        >>> print(prob_matrix)
+        [[0.0, 0.8, 0.3],
+         [0.8, 0.0, 0.9],
+         [0.3, 0.9, 0.0]]
+    """
+    
+    # 初始化概率矩阵
+    prob_matrix = np.zeros((num_nodes, num_nodes), dtype=np.float32)
+    
+    # 填充对角线
+    np.fill_diagonal(prob_matrix, fill_diagonal)
+    
+    # 填充边概率
+    for i, (src, dst) in enumerate(edge_pairs):
+        src, dst = int(src), int(dst)
+        prob_matrix[src, dst] = predictions[i]
+        
+        # 对于无向图，确保对称性
+        if not directed and src != dst:
+            prob_matrix[dst, src] = predictions[i]
+    
+    return prob_matrix
+
+
+def edge_flip_probability_analysis(dense_adj_matrix, dense_features, classifier, 
+                                 encoder=None, include_self_loops=False, 
+                                 directed=False, return_dense_matrix=True):
+    """
+    完整的边翻转概率分析：从稠密矩阵到边翻转概率矩阵
+    
+    Args:
+        dense_adj_matrix: 稠密邻接矩阵 [num_nodes, num_nodes]
+        dense_features: 稠密特征矩阵 [num_nodes, feature_dim]
+        classifier: EdgeFlipMAE的edge_classifier
+        encoder: EdgeFlipMAE的encoder (可选)
+        include_self_loops: 是否包含自环边
+        directed: 是否为有向图
+        return_dense_matrix: 是否返回稠密概率矩阵
+    
+    Returns:
+        dict: 边翻转概率分析结果
+            - 'flip_probability_matrix': 稠密边翻转概率矩阵 [num_nodes, num_nodes]
+            - 'original_adj_matrix': 原始邻接矩阵
+            - 'predictions': 原始预测概率
+            - 'edge_pairs': 边对索引
+            - 'flip_analysis': 边翻转分析结果
+            - 'statistics': 概率统计信息
+    
+    Examples:
+        >>> # 分析边翻转概率
+        >>> adj_matrix = np.array([[0, 1, 0], [1, 0, 1], [0, 1, 0]])
+        >>> features = np.random.randn(3, 100)
+        >>> 
+        >>> results = edge_flip_probability_analysis(
+        ...     adj_matrix, features, model.edge_classifier, model.encoder
+        ... )
+        >>> 
+        >>> print("边翻转概率矩阵:")
+        >>> print(results['flip_probability_matrix'])
+        >>> # [[0.0, 0.85, 0.23],
+        >>> #  [0.85, 0.0, 0.91], 
+        >>> #  [0.23, 0.91, 0.0]]
+        >>> 
+        >>> print("翻转分析:")
+        >>> for analysis in results['flip_analysis']:
+        ...     print(f"边{analysis['edge']}: 翻转概率={analysis['flip_probability']:.3f}")
+    """
+    
+    # 1. 获取完整分类结果
+    classification_results = complete_edge_classification_pipeline(
+        dense_adj_matrix, dense_features, classifier, encoder,
+        include_self_loops=include_self_loops, directed=directed,
+        return_probabilities=True
+    )
+    
+    predictions = classification_results['predictions']
+    edge_pairs = classification_results['edge_pairs']
+    edge_labels = classification_results['edge_labels']
+    num_nodes = dense_adj_matrix.shape[0]
+    
+    # 2. 转换为稠密概率矩阵
+    if return_dense_matrix:
+        flip_prob_matrix = predictions_to_dense_probability_matrix(
+            predictions, edge_pairs, num_nodes, directed=directed
+        )
+    else:
+        flip_prob_matrix = None
+    
+    # 3. 边翻转分析
+    flip_analysis = []
+    for i, (src, dst) in enumerate(edge_pairs):
+        src, dst = int(src), int(dst)
+        original_exists = bool(edge_labels[i])
+        predicted_prob = float(predictions[i])
+        
+        # 计算翻转概率
+        if original_exists:
+            # 原本存在的边，翻转概率 = 1 - 预测存在概率
+            flip_probability = 1.0 - predicted_prob
+            flip_type = "removal"  # 移除边
+        else:
+            # 原本不存在的边，翻转概率 = 预测存在概率
+            flip_probability = predicted_prob
+            flip_type = "addition"  # 添加边
+        
+        analysis_info = {
+            'edge': (src, dst),
+            'original_exists': original_exists,
+            'predicted_probability': predicted_prob,
+            'flip_probability': flip_probability,
+            'flip_type': flip_type,
+            'confidence': abs(predicted_prob - 0.5) * 2,  # 置信度 (0-1)
+            'recommendation': 'flip' if flip_probability > 0.5 else 'keep'
+        }
+        flip_analysis.append(analysis_info)
+    
+    # 4. 统计信息
+    flip_probs = [analysis['flip_probability'] for analysis in flip_analysis]
+    existing_edges = [analysis for analysis in flip_analysis if analysis['original_exists']]
+    non_existing_edges = [analysis for analysis in flip_analysis if not analysis['original_exists']]
+    
+    statistics = {
+        'total_edges_analyzed': len(flip_analysis),
+        'existing_edges_count': len(existing_edges),
+        'non_existing_edges_count': len(non_existing_edges),
+        'average_flip_probability': float(np.mean(flip_probs)),
+        'max_flip_probability': float(np.max(flip_probs)),
+        'min_flip_probability': float(np.min(flip_probs)),
+        'high_flip_probability_edges': len([p for p in flip_probs if p > 0.7]),
+        'low_flip_probability_edges': len([p for p in flip_probs if p < 0.3]),
+        'recommended_flips': len([a for a in flip_analysis if a['recommendation'] == 'flip'])
+    }
+    
+    if existing_edges:
+        removal_probs = [a['flip_probability'] for a in existing_edges]
+        statistics['average_removal_probability'] = float(np.mean(removal_probs))
+    
+    if non_existing_edges:
+        addition_probs = [a['flip_probability'] for a in non_existing_edges]
+        statistics['average_addition_probability'] = float(np.mean(addition_probs))
+    
+    print(f"边翻转概率分析完成:")
+    print(f"• 分析了 {statistics['total_edges_analyzed']} 条边")
+    print(f"• 平均翻转概率: {statistics['average_flip_probability']:.3f}")
+    print(f"• 建议翻转的边: {statistics['recommended_flips']} 条")
+    
+    return {
+        'flip_probability_matrix': flip_prob_matrix,
+        'original_adj_matrix': dense_adj_matrix.copy(),
+        'predictions': predictions,
+        'edge_pairs': edge_pairs,
+        'flip_analysis': flip_analysis,
+        'statistics': statistics,
+        'classification_results': classification_results
+    }
+
+
+def complete_edge_classification_pipeline(dense_adj_matrix, dense_features, classifier, 
+                                        encoder=None, include_self_loops=False, 
+                                        directed=False, return_probabilities=True, 
+                                        threshold=0.5, batch_size=1000):
+    """
+    完整的边分类流水线：从稠密矩阵到分类结果
+    
+    Args:
+        dense_adj_matrix: 稠密邻接矩阵
+        dense_features: 稠密特征矩阵
+        classifier: EdgeFlipMAE的edge_classifier
+        encoder: EdgeFlipMAE的encoder (可选，如果提供则先编码特征)
+        include_self_loops: 是否包含自环边
+        directed: 是否为有向图
+        return_probabilities: 是否返回概率值
+        threshold: 二分类阈值
+        batch_size: 批处理大小
+    
+    Returns:
+        dict: 完整的分类结果
+    """
+    
+    # 1. 处理特征
+    if encoder is not None:
+        # 如果提供了encoder，先编码特征
+        x = dense_features_to_encoder_format(dense_features)
+        edge_index = dense_adj_to_edge_index(dense_adj_matrix, 
+                                           remove_self_loops=not include_self_loops,
+                                           ensure_undirected=not directed)
+        
+        encoder.eval()
+        with torch.no_grad():
+            node_embeddings = encoder(x, edge_index)
+        
+        dense_node_embeddings = node_embeddings_to_dense_matrix(node_embeddings)
+    else:
+        # 直接使用提供的特征作为节点嵌入
+        dense_node_embeddings = dense_features
+    
+    # 2. 批量分类
+    results = batch_classify_all_edges(
+        classifier, dense_adj_matrix, dense_node_embeddings,
+        batch_size=batch_size, include_self_loops=include_self_loops,
+        directed=directed, return_probabilities=return_probabilities,
+        classify_all_possible_edges=True
+    )
+    
+    # 3. 添加二分类结果
+    if return_probabilities:
+        binary_predictions = (results['predictions'] > threshold).float()
+    else:
+        binary_predictions = (results['predictions'] > 0).float()
+    
+    results['binary_predictions'] = binary_predictions
+    results['threshold'] = threshold
+    
+    return results
+
+
+def demo_edge_flip_probability_analysis():
+    """
+    演示边翻转概率分析功能
+    """
+    print("=== 边翻转概率分析演示 ===")
+    
+    # 创建示例数据
+    print("\n1. 创建示例数据:")
+    adj_matrix = np.array([
+        [0, 1, 0, 1],
+        [1, 0, 1, 0],
+        [0, 1, 0, 1],
+        [1, 0, 1, 0]
+    ])
+    features = np.random.randn(4, 64)
+    
+    print(f"邻接矩阵:\n{adj_matrix}")
+    print(f"特征矩阵形状: {features.shape}")
+    
+    # 创建模拟分类器
+    print("\n2. 创建模拟分类器:")
+    import torch.nn as nn
+    
+    class MockClassifier(nn.Module):
+        def __init__(self, input_dim):
+            super().__init__()
+            self.linear = nn.Linear(input_dim, 1)
+            nn.init.xavier_uniform_(self.linear.weight)
+        
+        def forward(self, x):
+            return self.linear(x)
+    
+    mock_classifier = MockClassifier(128)  # 64*2=128
+    
+    # 边翻转概率分析
+    print("\n3. 边翻转概率分析:")
+    flip_results = edge_flip_probability_analysis(
+        adj_matrix, features, mock_classifier
+    )
+    
+    print("\n4. 分析结果:")
+    
+    print("\n4.1 稠密翻转概率矩阵:")
+    print(f"形状: {flip_results['flip_probability_matrix'].shape}")
+    print(f"矩阵:\n{flip_results['flip_probability_matrix']}")
+    
+    print("\n4.2 边翻转分析:")
+    for i, analysis in enumerate(flip_results['flip_analysis'][:6]):
+        edge = analysis['edge']
+        original = "存在" if analysis['original_exists'] else "不存在"
+        flip_prob = analysis['flip_probability']
+        flip_type = "移除" if analysis['flip_type'] == "removal" else "添加"
+        recommendation = "翻转" if analysis['recommendation'] == "flip" else "保持"
+        
+        print(f"  边{edge}: 原本{original}, {flip_type}概率={flip_prob:.3f}, 建议{recommendation}")
+    
+    print("\n4.3 统计信息:")
+    stats = flip_results['statistics']
+    print(f"  总边数: {stats['total_edges_analyzed']}")
+    print(f"  平均翻转概率: {stats['average_flip_probability']:.3f}")
+    print(f"  建议翻转的边: {stats['recommended_flips']}")
+    print(f"  高翻转概率边(>0.7): {stats['high_flip_probability_edges']}")
+    print(f"  低翻转概率边(<0.3): {stats['low_flip_probability_edges']}")
+    
+    if 'average_removal_probability' in stats:
+        print(f"  平均移除概率: {stats['average_removal_probability']:.3f}")
+    if 'average_addition_probability' in stats:
+        print(f"  平均添加概率: {stats['average_addition_probability']:.3f}")
+    
+    print("\n5. 使用说明:")
+    print("• flip_probability_matrix: 稠密矩阵形式，matrix[i,j]表示边(i,j)的翻转概率")
+    print("• flip_analysis: 每条边的详细翻转分析，包括翻转类型和建议")
+    print("• statistics: 整体翻转概率统计，帮助理解图的稳定性")
+    
+    return flip_results
+
+
 if __name__ == "__main__":
     test_converters()
     print("\n" + "="*50)
     test_embedding_converters()
     print("\n" + "="*50)
     test_classifier_input_preparation()
+    print("\n" + "="*50)
+    demo_edge_flip_probability_analysis()
