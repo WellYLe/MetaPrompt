@@ -8,7 +8,7 @@ import sys
 import os
 from DeepRobust.examples.graph.test_visualization import clean_adj
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-
+from utils.partition_graph import *
 from torch_geometric.utils import to_dense_adj
 import math
 import numpy as np
@@ -360,7 +360,8 @@ class Metattack(BaseMeta):
             is False.
 
         """
-
+        data = load_pyg_dataset('Cora')
+        train_graphs = partition_graph_equal(data, num_parts=8, shuffle=True, seed=0)
         self.sparse_features = sp.issparse(ori_features)# 检查是否为稀疏矩阵
         ori_adj, ori_features, labels = utils.to_tensor(ori_adj, ori_features, labels, device=self.device)# 转换为张量
         #labels_self_training = self.self_training_label(labels, idx_train)# 自训练标签
@@ -432,7 +433,7 @@ class Metattack(BaseMeta):
             feature_meta_score = torch.tensor(0.0).to(self.device)
             #GPL此时已经被训练好了
             if self.attack_structure:
-                adj_meta_score = attacker.final_attack(self.prompt,attacker, modified_adj,modified_features)['flip_probabilities']
+                adj_meta_score = attacker.final_attack(self.prompt,attacker, modified_adj,modified_features)
             #这里构造图数据，用扰动后的邻接矩阵和特征矩阵
             
                 feature_meta_score = self.get_feature_score(feature_grad, modified_features)
