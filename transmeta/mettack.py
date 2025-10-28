@@ -166,7 +166,7 @@ class GPF(torch.nn.Module):
         def add(self, x: torch.Tensor):
             return x + self.global_emb
         
-        def GPFTrain1(self, train_graphs,encoder):
+        def GPFTrain1(self, train_graphs,attacker):
             #self.prompt.train() 暂时不要，因为没别的prompt
             #train_graphs应该是稠密的图对象，比如load了cora之后，
             #通过图划分，来获得一个个子图，每个子图有adj和attr两个键，分别对应邻接矩阵和特征矩阵
@@ -185,11 +185,10 @@ class GPF(torch.nn.Module):
                   batch = batch.to(self.device)
                   feature = dense_features_to_encoder_format(batch.attr)
                   edge_index= dense_adj_to_edge_index(batch.adj)
-                  feature = encoder(feature, edge_index)
+                  feature = attacker.encoder(feature, edge_index)
                   feature = self.prompt.add(feature)
-                  batch.graph = create_graph_for_classifier(x=feature, edge_index=edge_index)
-                  s = self.attacker.predict_graph_with_decisions_with_get_all_edges(batch.graph)['flip_probabilities']
-                  
+                  batch.graph = prepare_classifier_input_from_dense(batch.adj,feature)
+                  s = self.attacker.predict_graph_with_decisions_with_get_all_edges(batch.graph)
                   #adj = to_dense_adj(batch.adj, batch=batch.batch, max_num_nodes=batch.x.size(0))
                   #batch.adj = ori_adj * (torch.ones_like(ori_adj)-s)+(torch.ones_like(ori_adj)-ori_adj)*s
                   #这行是那个离散地判断某一条边是不是要反转的那个小公式，但是优化过程中不能有哎
@@ -427,14 +426,15 @@ class Metattack(BaseMeta):
             #adj_grad = torch.autograd.grad(self.surrogate.predict(modified_features, adj_norm, idx_train, idx_unlabeled, labels), modified_adj, retain_graph=True)[0]# 用GCN模型预测并求梯度
             #这个地方没写怎么获得梯度的，但是我猜应该是用了torch.autograd.grad来获得的
             
-            GPF.GPFTrain1(train_graphs,attacker.encoder)#这就是唯一的训练过程
+            self.prompt.GPFTrain1(train_graphs,attacker.encoder)#这就是唯一的训练过程
             #在这个里面p被更新，每一轮攻击实际上是用一整个图子图化后对GNN+GPL进行训练
             adj_meta_score = torch.tensor(0.0).to(self.device)
             feature_meta_score = torch.tensor(0.0).to(self.device)
             #GPL此时已经被训练好了
             if self.attack_structure:
-                adj_meta_score = attacker.predict_graph_with_decisions_with_get_all_edges(self.prompt,modified_adj)['flip_probabilities']
-            #这里预测一下，做最终判断就行
+                adj_meta_score = attacker.final_attack(self.prompt,attacker, modified_adj,modified_features)['flip_probabilities']
+            #这里构造图数据，用扰动后的邻接矩阵和特征矩阵
+            
                 feature_meta_score = self.get_feature_score(feature_grad, modified_features)
             
             if adj_meta_score.max() >= feature_meta_score.max():

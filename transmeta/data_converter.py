@@ -265,60 +265,7 @@ def node_embeddings_to_dense_matrix(node_embeddings):
     return dense_matrix
 
 
-def embeddings_to_similarity_matrix(node_embeddings, metric='cosine'):
-    """
-    将节点嵌入转换为节点相似度矩阵
-    
-    Args:
-        node_embeddings: 节点嵌入 (torch.Tensor 或 numpy.ndarray)
-        metric: 相似度度量方式
-               - 'cosine': 余弦相似度 (默认)
-               - 'euclidean': 欧氏距离相似度
-               - 'dot': 点积相似度
-    
-    Returns:
-        numpy.ndarray: shape [num_nodes, num_nodes] 相似度矩阵
-    
-    Examples:
-        >>> embeddings = torch.randn(100, 64)
-        >>> sim_matrix = embeddings_to_similarity_matrix(embeddings, metric='cosine')
-        >>> print(f"相似度矩阵形状: {sim_matrix.shape}")  # (100, 100)
-    """
-    
-    # 转换为numpy格式
-    if isinstance(node_embeddings, torch.Tensor):
-        embeddings_np = node_embeddings_to_dense_matrix(node_embeddings)
-    else:
-        embeddings_np = np.array(node_embeddings, dtype=np.float32)
-    
-    num_nodes = embeddings_np.shape[0]
-    
-    if metric == 'cosine':
-        # 余弦相似度
-        # 先归一化
-        norms = np.linalg.norm(embeddings_np, axis=1, keepdims=True)
-        norms[norms == 0] = 1  # 避免除零
-        normalized_embeddings = embeddings_np / norms
-        
-        # 计算余弦相似度
-        similarity_matrix = np.dot(normalized_embeddings, normalized_embeddings.T)
-        
-    elif metric == 'euclidean':
-        # 欧氏距离相似度 (转换为相似度: 1 / (1 + distance))
-        from scipy.spatial.distance import cdist
-        distance_matrix = cdist(embeddings_np, embeddings_np, metric='euclidean')
-        similarity_matrix = 1 / (1 + distance_matrix)
-        
-    elif metric == 'dot':
-        # 点积相似度
-        similarity_matrix = np.dot(embeddings_np, embeddings_np.T)
-        
-    else:
-        raise ValueError(f"不支持的相似度度量: {metric}")
-    
-    print(f"相似度矩阵计算完成: {num_nodes}x{num_nodes}, 度量方式: {metric}")
-    
-    return similarity_matrix
+
 
 
 def save_embeddings(node_embeddings, filepath, format='npy'):

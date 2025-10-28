@@ -436,18 +436,30 @@ class EdgeFlipMAE(PreTrain):
             flip_probs = self.predict_edge_flips(edge_pairs, graph_data)
             
             # 基于阈值做决策
-            flip_decisions = flip_probs > threshold
-            
-            return {
-                'edge_pairs': edge_pairs,
-                'flip_probabilities': flip_probs,
-                'flip_decisions': flip_decisions,
-                'num_edges': len(edge_pairs),
-                'num_flipped': np.sum(flip_decisions),
-                'flip_ratio': np.mean(flip_decisions),
-                'avg_flip_prob': np.mean(flip_probs)
-            }
+            # flip_decisions = flip_probs > threshold
+            M = np.zeros((num_nodes, num_nodes), dtype=float)
+            for (u, v), p in zip(edge_pairs, flip_probs):
+                M[u, v] = p
+                if undirected:
+                    M[v, u] = p
+            return M
 
+            # return {
+            #     'edge_pairs': edge_pairs,
+            #     'flip_probabilities': flip_probs,
+            #     'flip_decisions': flip_decisions,
+            #     'num_edges': len(edge_pairs),
+            #     'num_flipped': np.sum(flip_decisions),
+            #     'flip_ratio': np.mean(flip_decisions),
+            #     'avg_flip_prob': np.mean(flip_probs)
+            # }
+    def edge_probs_to_dense_matrix(flip_probs, edge_pairs, num_nodes, undirected=True):
+        M = np.zeros((num_nodes, num_nodes), dtype=float)
+        for (u, v), p in zip(edge_pairs, flip_probs):
+            M[u, v] = p
+            if undirected:
+                M[v, u] = p
+        return M
 
     
     def predict_all_edges(self, graph_data):
@@ -509,7 +521,26 @@ class EdgeFlipMAE(PreTrain):
         graph_data = Data(x=node_features, edge_index=edge_index)
         
         return graph_data
-
+    def final_attack(self, graph_data, threshold=0.5):
+        """预测图中所有边的翻转情况并给出决策"""
+            # 获取所有边对
+        edge_index = graph_data.edge_index
+        edge_pairs = edge_index.t().cpu().numpy()  # [num_edges, 2]
+            
+            # 预测翻转概率
+        flip_probs = self.predict_edge_flips(edge_pairs, graph_data)
+            
+        基于阈值做决策
+        flip_decisions = flip_probs > threshold
+        return {
+            'edge_pairs': edge_pairs,
+            'flip_probabilities': flip_probs,
+            'flip_decisions': flip_decisions,
+            'num_edges': len(edge_pairs),
+            'num_flipped': np.sum(flip_decisions),
+            'flip_ratio': np.mean(flip_decisions),
+            'avg_flip_prob': np.mean(flip_probs)
+        }
     def demo_edge_flip_prediction():
         """演示如何使用EdgeFlipMAE进行边翻转预测"""
         
