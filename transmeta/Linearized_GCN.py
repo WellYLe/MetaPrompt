@@ -2,6 +2,7 @@ import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import torch
 import torch.nn
+import torch.optim as optim
 import math
 import torch.nn.functional as F
 import torch.nn as nn
@@ -85,19 +86,86 @@ class Linearized_GCN(torch.nn.Module):
             x = conv(x, adj_norm)
         return x
     
-    def train(self, 
+    def fit(self, x, adj_norm, y, learning_rate=0.01, weight_decay=5e-4, epochs=200, verbose=True, patience=10):
+        """
+        简单的训练方法，类似于 metagpro.py 中的训练方式
+        直接使用提供的数据进行训练，不加载数据集
+        
+        Args:
+            x: 节点特征矩阵
+            adj_norm: 归一化邻接矩阵
+            y: 标签
+            learning_rate: 学习率
+            weight_decay: 权重衰减
+            epochs: 训练轮数
+            verbose: 是否打印训练过程
+            patience: 早停耐心值
+        """
+        # 确保数据在正确的设备上
+        x = x.to(self.device) if hasattr(self, 'device') else x
+        adj_norm = adj_norm.to(self.device) if hasattr(self, 'device') else adj_norm
+        y = y.to(self.device) if hasattr(self, 'device') else y
+        
+        # 创建优化器
+        optimizer = optim.Adam(self.parameters(), lr=learning_rate, weight_decay=weight_decay)
+        
+        if verbose:
+            print(f"开始训练 Linearized_GCN...")
+            print(f"  - 节点数: {x.shape[0]}")
+            print(f"  - 特征维度: {x.shape[1]}")
+            print(f"  - 类别数: {y.max().item() + 1}")
+            print(f"  - 模型参数数量: {sum(p.numel() for p in self.parameters())}")
+        
+        # 训练记录
+        best_loss = float('inf')
+        patience_counter = 0
+        
+        # 训练循环
+        for epoch in range(epochs):
+            self.train()
+            optimizer.zero_grad()
+            
+            # 前向传播
+            output = F.log_softmax(self(x, adj_norm), dim=1)
+            loss = F.nll_loss(output, y)
+            
+            # 反向传播
+            loss.backward()
+            optimizer.step()
+            
+            # 早停检查
+            if loss.item() < best_loss:
+                best_loss = loss.item()
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= patience:
+                    if verbose:
+                        print(f'Early stopping at epoch {epoch}!')
+                    break
+            
+            # 打印训练进度
+            if verbose and (epoch + 1) % 20 == 0:
+                print(f'Epoch {epoch+1}/{epochs}, Loss: {loss.item():.4f}')
+        
+        if verbose:
+            print(f"训练完成，最终损失: {best_loss:.4f}")
+        
+        self.eval()
+        return {'final_loss': best_loss, 'epochs_trained': epoch + 1}
+    def train_with_dataset(self, 
                    dataset_name='Cora', 
                    task_type='node',  # 'node' 或 'graph'
                    learning_rate=0.05, 
                    weight_decay=1e-4, 
                    epochs=100, 
                    device=None,
-                   verbose=True,
+                   verbose=False,
                    early_stopping=False,
                    patience=10,
                    min_delta=1e-4):
         """
-        训练 Linearized_GCN 模型
+        使用数据集训练 Linearized_GCN 模型
         
         Args:
             dataset_name: 数据集名称
@@ -139,6 +207,7 @@ class Linearized_GCN(torch.nn.Module):
                 return self._train_graph_classification(
                     dataset_name, learning_rate, weight_decay, epochs, 
                     device, verbose, early_stopping, patience, min_delta
+    
                 )
             else:
                 raise ValueError("task_type 必须是 'node' 或 'graph'")
@@ -146,17 +215,17 @@ class Linearized_GCN(torch.nn.Module):
         except Exception as e:
             print(f"训练过程中出现错误: {e}")
             raise
-    
     def _train_node_classification(self, dataset_name, learning_rate, weight_decay, 
                                  epochs, device, verbose, early_stopping, patience, min_delta):
-        """节点分类训练"""
-        # 加载数据
+        """节点分类训练 - 从数据集加载数据"""
+        # 加载数据集
         data, feature_dim, out_dim = load4node(dataset_name)
         x = torch.FloatTensor(data.x).to(device)
         y = data.y.to(device)
         edge_index = data.edge_index
         
         if verbose:
+            print(f"{dataset_name}")
             print(f"数据集信息:")
             print(f"  - 节点数: {x.shape[0]}")
             print(f"  - 特征维度: {feature_dim}")

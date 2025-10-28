@@ -6,7 +6,7 @@
 """
 import sys
 import os
-from DeepRobust.examples.graph.test_visualization import clean_adj
+#from DeepRobust.examples.graph.test_visualization import clean_adj
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 from utils.partition_graph import *
 from torch_geometric.utils import to_dense_adj
@@ -14,6 +14,7 @@ import math
 import numpy as np
 import scipy.sparse as sp
 import torch
+import torch.nn as nn
 from torch import optim
 from torch.nn import functional as F
 from torch.nn.parameter import Parameter
@@ -22,21 +23,22 @@ from torch_geometric.data import Data
 from utils import edge_index_to_adjacency_matrix,edge_index_to_sparse_matrix
 from Linearized_GCN import Linearized_GCN
 # 设置DeepRobust路径并添加到Python路径中
-# REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'DeepRobust'))
-# sys.path.insert(0, REPO_ROOT)
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'DeepRobust'))
+sys.path.insert(0, REPO_ROOT)
 
 # 现在可以正确导入deeprobust包
-from DeepRobust.deeprobust.graph import utils
-from DeepRobust.deeprobust.graph.global_attack import BaseAttack
-from DeepRobust.deeprobust.graph.data import Dataset
+from deeprobust.graph import utils
+from deeprobust.graph.global_attack import BaseAttack
+from deeprobust.graph.data import Dataset
 from edge_flip_mae_example import load_and_predict_example
 from torch_geometric.utils import degree
 from torch_geometric.loader import DataLoader
-from DeepRobust.deeprobust.graph.defense.gcn import GCN
+from deeprobust.graph.defense.gcn import GCN
 from EdgeFlipMAE import EdgeFlipMAE
 from utils.edge_index_to_adjacency_matrix import edge_index_to_adjacency_matrix
 from utils.edge_index_to_sparse_matrix import edge_index_to_sparse_matrix
 from data_converter import *
+from torch_geometric.nn.inits import glorot
 
 
 class BaseMeta(BaseAttack):
@@ -154,55 +156,95 @@ class BaseMeta(BaseAttack):
         return feature_meta_grad
 
 class GPF(torch.nn.Module):
-        def __init__(self, in_channels: int,attacker=None):
-            super(GPF, self).__init__()
-            self.global_emb = torch.nn.Parameter(torch.Tensor(1,in_channels))
-            self.reset_parameters()
-            self.attacker = attacker
+    def __init__(self, in_channels: int, attacker=None):
+        super(GPF, self).__init__()
+        self.global_emb = torch.nn.Parameter(torch.Tensor(1, in_channels))
+        self.reset_parameters()
+        self.attacker = attacker
 
-        def reset_parameters(self):
-            glorot(self.global_emb)
+    def reset_parameters(self):
+        glorot(self.global_emb)
 
-        def add(self, x: torch.Tensor):
-            return x + self.global_emb
-        
-        def GPFTrain1(self, train_graphs,attacker):
-            #self.prompt.train() 暂时不要，因为没别的prompt
-            #train_graphs应该是稠密的图对象，比如load了cora之后，
-            #通过图划分，来获得一个个子图，每个子图有adj和attr两个键，分别对应邻接矩阵和特征矩阵
-            #每个子图还会有batch键，对应着每个节点所属的子图编号
-            #每个子图还会有y键，对应着每个节点的标签
-            #每个子图还会有train_mask, val_mask, test_mask键，对应着每个节点的训练集、验证集、测试集掩码
-            #每个子图还会有edge_index键，对应着边的索引
-            #每个子图还会有num_nodes键，对应着节点的数量
-            #每个子图还会有num_edges键，对应着边的数量
-            #每个子图还会有num_features键，对应着特征的维度
-            #每个子图还会有num_classes键，对应着类别的数量
-            #每个子图还会有graph键，对应着图对象
-            total_loss = 0.0             
-            for batch in train_graphs:  
-                  self.optimizer.zero_grad() 
-                  batch = batch.to(self.device)
-                  feature = dense_features_to_encoder_format(batch.attr)
-                  edge_index= dense_adj_to_edge_index(batch.adj)
-                  feature = attacker.encoder(feature, edge_index)
-                  feature = self.prompt.add(feature)
-                  batch.graph = prepare_classifier_input_from_dense(batch.adj,feature)
-                  s = self.attacker.predict_graph_with_decisions_with_get_all_edges(batch.graph)
-                  #adj = to_dense_adj(batch.adj, batch=batch.batch, max_num_nodes=batch.x.size(0))
-                  #batch.adj = ori_adj * (torch.ones_like(ori_adj)-s)+(torch.ones_like(ori_adj)-ori_adj)*s
-                  #这行是那个离散地判断某一条边是不是要反转的那个小公式，但是优化过程中不能有哎
-                  
-                  #其实这里如果能改成edge_index的形式是否效率上会更好？对于取负样本是否会存在影响？
-                  #实际上最重要的修改是加边，那么就要考虑是否会少看到边
-                  out = self.surrogate.predict(s,feature)
-                  out = self.answering(out)
-                  criterion = nn.BCEWithLogitsLoss()
-                  loss = criterion(out, batch.y)
-                  loss.backward()  
-                  self.optimizer.step()#这里应该只更新prompt的参数  
-                  total_loss += loss.item()  
-            return total_loss / len(train_loader) 
+    def add(self, x: torch.Tensor):
+        return x + self.global_emb
+    
+    def GPFTrain1(self, train_graphs, attacker, surrogate, answering, optimizer, device='cuda'):
+        """训练GPF提示"""
+        total_loss = 0.0             
+        for batch in train_graphs:  
+            optimizer.zero_grad() 
+            batch = batch.to(device)
+            
+            # 检查batch是否有必要的属性
+            if not hasattr(batch, 'x') or not hasattr(batch, 'edge_index'):
+                # 从子图数据构造PyG Data格式
+                if hasattr(batch, 'orig_node_idx'):
+                    # 这是partition_graph_equal返回的子图
+                    feature = batch.x  # 节点特征
+                    edge_index = batch.edge_index  # 边索引
+                else:
+                    print("警告: batch缺少必要的图数据属性")
+                    continue
+            else:
+                feature = batch.x
+                edge_index = batch.edge_index
+            
+            # 构造图数据用于预测（使用原始特征而不是编码后的嵌入）
+            graph_data = Data(x=feature, edge_index=edge_index)
+            
+            # 使用EdgeFlipMAE预测边翻转概率
+            flip_probs = attacker.predict_all_edges(graph_data)
+            
+            # 通过编码器获得节点嵌入（用于后续的提示处理）
+            node_embeddings = attacker.encoder(feature, edge_index)
+            
+            # 添加提示
+            prompted_embeddings = self.add(node_embeddings)
+            
+            # 构造扰动后的邻接矩阵（软扰动，用于梯度传播）
+            num_nodes = feature.shape[0]
+            adj_matrix = torch.zeros(num_nodes, num_nodes, device=device)
+            adj_matrix[edge_index[0], edge_index[1]] = 1.0
+            
+            # 软扰动：使用概率而不是硬决策
+            flip_probs_tensor = torch.tensor(flip_probs, device=device)
+            edge_probs_matrix = torch.zeros_like(adj_matrix)
+            edge_probs_matrix[edge_index[0], edge_index[1]] = flip_probs_tensor
+            
+            # 扰动后的软邻接矩阵
+            perturbed_adj = adj_matrix * (1 - edge_probs_matrix) + (1 - adj_matrix) * edge_probs_matrix
+            
+            # 归一化邻接矩阵
+            adj_norm = self._normalize_adj(perturbed_adj)
+            
+            # 通过代理模型预测
+            surrogate_output = surrogate(prompted_embeddings, adj_norm)
+            final_output = answering(surrogate_output)
+            
+            # 计算损失（这里需要真实标签，假设batch.y存在）
+            if hasattr(batch, 'y'):
+                criterion = nn.CrossEntropyLoss()
+                loss = criterion(final_output, batch.y)
+            else:
+                # 如果没有标签，可以使用自监督损失或跳过
+                print("警告: batch缺少标签信息")
+                continue
+            
+            loss.backward()  
+            optimizer.step()
+            total_loss += loss.item()  
+            
+        return total_loss / len(train_graphs) if len(train_graphs) > 0 else 0.0
+    
+    def _normalize_adj(self, adj):
+        """归一化邻接矩阵"""
+        adj = adj + torch.eye(adj.shape[0], device=adj.device)
+        D = torch.sum(adj, dim=1)
+        D_inv = torch.pow(D, -0.5)
+        D_inv[torch.isinf(D_inv)] = 0.
+        D_mat_inv = torch.diag(D_inv)
+        adj_norm = D_mat_inv @ adj @ D_mat_inv
+        return adj_norm 
         
 
 
@@ -250,9 +292,22 @@ class Metattack(BaseMeta):
         self.w_velocities = []# 权重动量列表
         self.b_velocities = []# 偏置项动量列表
 
-        self.hidden_sizes = self.surrogate.hidden_sizes# 隐藏层大小列表
-        self.nfeat = self.surrogate.nfeat# 输入特征维度
-        self.nclass = self.surrogate.nclass# 输出类别数
+        # 从 Linearized_GCN 模型中获取属性
+        # 注意：Linearized_GCN 没有 hidden_sizes, nfeat, nclass 属性，需要手动设置
+        if hasattr(self.surrogate, 'conv_layers'):
+            # 从卷积层推断隐藏层大小
+            self.hidden_sizes = []
+            for i, layer in enumerate(self.surrogate.conv_layers[:-1]):  # 除了最后一层
+                self.hidden_sizes.append(layer.out_features)
+            
+            # 设置输入和输出维度
+            self.nfeat = self.surrogate.conv_layers[0].in_features
+            self.nclass = self.surrogate.conv_layers[-1].out_features
+        else:
+            # 默认值，如果无法从模型推断
+            self.hidden_sizes = [16]  # 默认隐藏层大小
+            self.nfeat = feature_shape[1] if feature_shape else 1433  # Cora 数据集默认特征维度
+            self.nclass = 7  # Cora 数据集默认类别数
         self.model = model# 受害者模型
         self.attacker_encoder = attacker_encoder# 攻击模型编码器
         self.attacker_classifier = attacker_classifier# 攻击模型分类器
@@ -299,33 +354,32 @@ class Metattack(BaseMeta):
                 v.data.fill_(0)
 
     def initialize_optimizer(self):
-            if self.prompt_type == 'None':
-                if self.pre_train_model_path == 'None':
-                    model_param_group = []
-                    model_param_group.append({"params": self.gnn.parameters()})
-                    model_param_group.append({"params": self.answering.parameters()})
-                    self.optimizer = optim.Adam(model_param_group, lr=self.lr, weight_decay=self.wd)
-                else:
-                    model_param_group = []
-                    model_param_group.append({"params": self.gnn.parameters()})
-                    model_param_group.append({"params": self.answering.parameters()})
-                    self.optimizer = optim.Adam(model_param_group, lr=self.lr, weight_decay=self.wd)
-                    # self.optimizer = optim.Adam(self.answering.parameters(), lr=self.lr, weight_decay=self.wd)
+        # 设置默认值
+        if not hasattr(self, 'lr'):
+            self.lr = 0.001
+        if not hasattr(self, 'wd'):
+            self.wd = 5e-4
+            
+        if self.prompt_type == 'None':
+            model_param_group = []
+            model_param_group.append({"params": self.gnn.parameters()})
+            model_param_group.append({"params": self.answering.parameters()})
+            self.optimizer = optim.Adam(model_param_group, lr=self.lr, weight_decay=self.wd)
 
-            elif self.prompt_type == 'All-in-one':
-                self.pg_opi = optim.Adam( self.prompt.parameters(), lr=1e-6, weight_decay= self.wd)
-                self.answer_opi = optim.Adam( self.answering.parameters(), lr=self.lr, weight_decay= self.wd)
-            elif self.prompt_type in ['GPF', 'GPF-plus']:
-                model_param_group = []
-                model_param_group.append({"params": self.prompt.parameters()})
-                model_param_group.append({"params": self.answering.parameters()})
-                self.optimizer = optim.Adam(model_param_group, lr=self.lr, weight_decay=self.wd)
-            elif self.prompt_type in ['Gprompt']:
-                self.pg_opi = optim.Adam(self.prompt.parameters(), lr=self.lr, weight_decay=self.wd)
-            elif self.prompt_type in ['GPPT']:
-                self.pg_opi = optim.Adam(self.prompt.parameters(), lr=2e-3, weight_decay=5e-4)
-            elif self.prompt_type == 'MultiGprompt':
-                self.optimizer = optim.Adam([*self.DownPrompt.parameters(),*self.feature_prompt.parameters()], lr=self.lr)
+        elif self.prompt_type == 'All-in-one':
+            self.pg_opi = optim.Adam(self.prompt.parameters(), lr=1e-6, weight_decay=self.wd)
+            self.answer_opi = optim.Adam(self.answering.parameters(), lr=self.lr, weight_decay=self.wd)
+        elif self.prompt_type in ['GPF', 'GPF-plus']:
+            model_param_group = []
+            model_param_group.append({"params": self.prompt.parameters()})
+            model_param_group.append({"params": self.answering.parameters()})
+            self.optimizer = optim.Adam(model_param_group, lr=self.lr, weight_decay=self.wd)
+        elif self.prompt_type in ['Gprompt']:
+            self.pg_opi = optim.Adam(self.prompt.parameters(), lr=self.lr, weight_decay=self.wd)
+        elif self.prompt_type in ['GPPT']:
+            self.pg_opi = optim.Adam(self.prompt.parameters(), lr=2e-3, weight_decay=5e-4)
+        elif self.prompt_type == 'MultiGprompt':
+            self.optimizer = optim.Adam([*self.DownPrompt.parameters(),*self.feature_prompt.parameters()], lr=self.lr)
 
 
     
@@ -333,7 +387,7 @@ class Metattack(BaseMeta):
         
  
         
-    def attack(self, ori_features, ori_adj, labels, idx_train, idx_unlabeled, n_perturbations, ll_constraint=True, ll_cutoff=0.004):
+    def attack(self, ori_features, ori_adj, labels, idx_train, idx_unlabeled=None, n_perturbations=10, ll_constraint=True, ll_cutoff=0.004):
         """Generate n_perturbations on the input graph.
 
         Parameters
@@ -360,98 +414,167 @@ class Metattack(BaseMeta):
             is False.
 
         """
-        data = load_pyg_dataset('Cora')
-        train_graphs = partition_graph_equal(data, num_parts=8, shuffle=True, seed=0)
-        self.sparse_features = sp.issparse(ori_features)# 检查是否为稀疏矩阵
-        ori_adj, ori_features, labels = utils.to_tensor(ori_adj, ori_features, labels, device=self.device)# 转换为张量
-        #labels_self_training = self.self_training_label(labels, idx_train)# 自训练标签
-        modified_adj = ori_adj# 复制原始邻接矩阵
-        modified_features = ori_features# 复制原始特征矩阵
-        self.surrogate = Linearized_GCN(nfeat=features.shape[1], nclass=labels.max().item()+1,
-            nhid=16, dropout=0, with_relu=False, with_bias=False, device='cpu', task_type='node').to('cpu')
-        self.surrogate.train(features, adj_norm, labels, idx_train, idx_unlabeled, patience=30)
-        self.surrogate.train(dataset_name='Cora', 
-                   task_type='node',  # 'node' 或 'graph'
-                   learning_rate=0.05, 
-                   weight_decay=1e-4, 
-                   epochs=100, 
-                   device='cuda',
-                   verbose=True,
-                   early_stopping=False,
-                   patience=10,
-                   min_delta=1e-4)#这里在clean graph上训练可接收稠密矩阵的GCN
-        #加载 cora 数据集
-        # data = Dataset(root='/tmp/', name='cora')
-        # adj, features, labels = data.adj, data.features, data.labels
-        # idx_train, idx_val, idx_test = data.idx_train, data.idx_val, data.idx_test
-#####################FINISH TRAINING SURROGATE MODEL################################
-        #这里导入在上游训练的判断图的Attacker模型，用于生成扰动
-        attacker = EdgeFlipMAE(
-            gnn_type='GCN',  # 使用GCN作为编码器
-            dataset_name='Cora',  # 数据集名称
-            input_dim=ori_features.shape[1],  # 输入特征维度
-            hid_dim=64,  # 隐藏层维度
-            num_layer=2,  # GNN层数
-            device=self.device,  # 设备
-            mask_rate=0.15,  # 掩码率
-            noise_rate=0.1,  # 噪声率
-            learning_rate=0.001,  # 学习率
-            weight_decay=5e-4,  # 权重衰减
-            epochs=200  # 训练轮数
-        )
-        attacker.load_model(self.attacker_encoder, self.attacker_classifier)
+        print(f"开始攻击，扰动数量: {n_perturbations}")
         
-        # modified_adj = attacker.modified_adj# 扰动后的邻接矩阵
-        # modified_features = attacker.modified_features# 扰动后的特征矩阵
-        self.answering =  torch.nn.Sequential(torch.nn.Linear(self.hid_dim, self.output_dim),
-                                    torch.nn.Softmax(dim=1)).to(self.device) 
-        self.prompt = GPF(self.input_dim).to(self.device)
+        # 加载和分割图数据
+        data = Dataset(root='/tmp/', name='cora', setting='nettack')
+        adj, features, labels_data = data.adj, data.features, data.labels
+        idx_train_data, idx_val, idx_test = data.idx_train, data.idx_val, data.idx_test
+        
+        # 图分割 - 需要先将数据转换为 PyTorch Geometric Data 格式
+        from torch_geometric.data import Data
+        
+        # 将 scipy sparse matrix 转换为 edge_index
+        edge_index = torch.tensor(np.array(adj.nonzero()), dtype=torch.long)
+        x = torch.tensor(features.toarray() if hasattr(features, 'toarray') else features, dtype=torch.float)
+        y = torch.tensor(labels_data, dtype=torch.long)
+        
+        # 创建 Data 对象
+        graph_data = Data(x=x, edge_index=edge_index, y=y)
+        
+        # 调用图分割函数
+        train_graphs = partition_graph_equal(graph_data, num_parts=8, shuffle=True, seed=0)
+        
+        # 转换为张量
+        self.sparse_features = sp.issparse(ori_features)
+        ori_adj, ori_features, labels = utils.to_tensor(ori_adj, ori_features, labels, device=self.device)
+        
+        # 初始化代理模型并训练
+        print("初始化并训练代理模型...")
+        self.surrogate = Linearized_GCN(input_dim=ori_features.shape[1], 
+                                       hid_dim=16,
+                                       out_dim=labels.max().item()+1,
+                                       num_layer=2, 
+                                       bias=False, 
+                                       task_type='node').to(self.device)
+        
+        # 训练代理模型
+        adj_norm = utils.normalize_adj_tensor(ori_adj)
+        if idx_unlabeled is None:
+            idx_unlabeled = torch.cat([idx_val, idx_test])
+        
+        # 使用简单的 fit 方法训练代理模型
+        print("训练代理模型...")
+        self.surrogate.fit(
+            x=ori_features,
+            adj_norm=adj_norm,
+            y=labels,
+            learning_rate=0.01,
+            weight_decay=5e-4,
+            epochs=200,
+            verbose=True,
+            patience=10
+        )
+        
+        # 初始化EdgeFlipMAE攻击器
+        print("初始化EdgeFlipMAE攻击器...")
+        # 提取设备索引，避免重复的 'cuda:' 前缀
+        if isinstance(self.device, str) and self.device.startswith('cuda:'):
+            device_idx = int(self.device.split(':')[1])
+        elif self.device == 'cpu':
+            device_idx = 'cpu'
+        else:
+            device_idx = 0  # 默认使用 GPU 0
+            
+        attacker = EdgeFlipMAE(
+            gnn_type='GCN',
+            dataset_name='Cora',
+            input_dim=ori_features.shape[1],  # 1433维输入
+            hid_dim=ori_features.shape[1],  # 1433维输出，保持维度一致
+            num_layer=2,
+            device=device_idx,
+            mask_rate=0.15,
+            noise_rate=0.1,
+            learning_rate=0.001,
+            weight_decay=5e-4,
+            epochs=200
+        )
+        
+        # 加载预训练模型
+        # 使用绝对路径确保文件能被找到
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        encoder_path = os.path.join(current_dir, 'Experiment', 'pre_trained_model', 'Cora', 'EdgeFlipMAE.GCN.32hidden_dim.encoder.pth')
+        classifier_path = os.path.join(current_dir, 'Experiment', 'pre_trained_model', 'Cora', 'EdgeFlipMAE.GCN.32hidden_dim.classifier.pth')
+        attacker.load_model(encoder_path, classifier_path)
+        
+        # 初始化提示和应答模块
+        print("初始化提示模块...")
+        self.answering = torch.nn.Sequential(
+            torch.nn.Linear(ori_features.shape[1] * 2, labels.max().item()+1),  # 输入维度调整为1433*2
+            torch.nn.Softmax(dim=1)
+        ).to(self.device)
+        
+        # GPF 的 in_channels 应该匹配 attacker.encoder 的输出维度（32），而不是输入特征维度（1433）
+        self.prompt = GPF(32, attacker=attacker).to(self.device)  # 使用 hid_dim=32
         self.gnn = attacker
-        #为什么好像别的文件调用self.prompt的时候都不需要再init函数中声明这个变量？
+        
+        # 初始化优化器
         self.initialize_optimizer()
-        # train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
-#####################FINISH INITIALIZING THE PROMPT################################     
-   
-#####################FOLLOWING BEGIN TO ATTACK#####################################    
-#今天下午的核心任务是把所有的输入参数对齐，然后完成对整个图的y的预测
+        
+        # 执行攻击迭代
+        print("开始攻击迭代...")
         for i in tqdm(range(n_perturbations), desc="Perturbing graph"):
-            #n个扰动过程实际上是n个子图输入再判断的过程————先试试这个
-            #或者是n轮的所有子图输入再输出的过程
+            print(f"攻击迭代 {i+1}/{n_perturbations}")
+            
+            # 获取当前修改后的图
             if self.attack_structure:
-                modified_adj = self.get_modified_adj(ori_adj)# 更新扰动后的邻接矩阵
-
-            # if self.attack_features:
-            #     modified_features = ori_features + self.feature_changes
+                modified_adj = self.get_modified_adj(ori_adj)
+            else:
+                modified_adj = ori_adj
+                
+            if self.attack_features:
+                modified_features = self.get_modified_features(ori_features)
+            else:
+                modified_features = ori_features
             
-            adj_norm = utils.normalize_adj_tensor(modified_adj)# 归一化扰动后的邻接矩阵
-            #adj_grad = torch.autograd.grad(self.surrogate.predict(modified_features, adj_norm, idx_train, idx_unlabeled, labels), modified_adj, retain_graph=True)[0]# 用GCN模型预测并求梯度
-            #这个地方没写怎么获得梯度的，但是我猜应该是用了torch.autograd.grad来获得的
+            # 归一化邻接矩阵
+            adj_norm = utils.normalize_adj_tensor(modified_adj)
             
-            self.prompt.GPFTrain1(train_graphs,attacker.encoder)#这就是唯一的训练过程
-            #在这个里面p被更新，每一轮攻击实际上是用一整个图子图化后对GNN+GPL进行训练
+            # 训练提示
+            loss = self.prompt.GPFTrain1(train_graphs, attacker, self.surrogate, self.answering, self.optimizer, self.device)
+            print(f"提示训练损失: {loss:.4f}")
+            
+            # 计算元分数
             adj_meta_score = torch.tensor(0.0).to(self.device)
             feature_meta_score = torch.tensor(0.0).to(self.device)
-            #GPL此时已经被训练好了
-            if self.attack_structure:
-                adj_meta_score = attacker.final_attack(self.prompt,attacker, modified_adj,modified_features)
-            #这里构造图数据，用扰动后的邻接矩阵和特征矩阵
             
+            if self.attack_structure:
+                # 使用EdgeFlipMAE进行最终攻击决策
+                adj_meta_score = attacker.final_attack(self.prompt, attacker, modified_adj, modified_features)
+                
+            if self.attack_features:
+                # 计算特征梯度（简化实现）
+                feature_grad = torch.autograd.grad(
+                    self.surrogate.predict(modified_features, adj_norm), 
+                    modified_features, 
+                    retain_graph=True
+                )[0]
                 feature_meta_score = self.get_feature_score(feature_grad, modified_features)
             
+            # 根据分数决定扰动类型
             if adj_meta_score.max() >= feature_meta_score.max():
-                adj_meta_argmax = torch.argmax(adj_meta_score)#在所有边里找最佳扰动点
+                # 扰动邻接矩阵
+                adj_meta_argmax = torch.argmax(adj_meta_score)
                 row_idx, col_idx = utils.unravel_index(adj_meta_argmax, ori_adj.shape)
                 self.adj_changes.data[row_idx][col_idx] += (-2 * modified_adj[row_idx][col_idx] + 1)
                 if self.undirected:
                     self.adj_changes.data[col_idx][row_idx] += (-2 * modified_adj[row_idx][col_idx] + 1)
+                print(f"翻转边: ({row_idx}, {col_idx})")
             else:
+                # 扰动特征
                 feature_meta_argmax = torch.argmax(feature_meta_score)
                 row_idx, col_idx = utils.unravel_index(feature_meta_argmax, ori_features.shape)
                 self.feature_changes.data[row_idx][col_idx] += (-2 * modified_features[row_idx][col_idx] + 1)
+                print(f"扰动节点 {row_idx} 的特征 {col_idx}")
 
+        # 保存最终结果
         if self.attack_structure:
             self.modified_adj = self.get_modified_adj(ori_adj).detach()
         if self.attack_features:
             self.modified_features = self.get_modified_features(ori_features).detach()
+            
+        print("攻击完成!")
+        return self.modified_adj if self.attack_structure else ori_adj, \
+               self.modified_features if self.attack_features else ori_features
             
     

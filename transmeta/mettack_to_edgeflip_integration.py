@@ -12,6 +12,7 @@ Mettack数据集与EdgeFlipMAE模型集成脚本
 """
 
 import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import sys
 import torch
 import numpy as np
@@ -163,11 +164,14 @@ def create_graph_from_pairs(pairs, node_features):
 
 def train_edgeflip_mae_with_mettack_data(dataset_dict, 
                                         gnn_type='GCN',
-                                        hid_dim=64,
+                                        hid_dim=32,  # 修改为32以匹配预期的隐藏维度
                                         num_layer=2,
-                                        epochs=100,
+                                        epochs=200,  # 增加训练轮数
                                         batch_size=64,
                                         learning_rate=0.001,
+                                        weight_decay=5e-4,  # 添加权重衰减参数
+                                        mask_rate=0.15,     # 添加掩码率参数
+                                        noise_rate=0.1,     # 添加噪声率参数
                                         device='auto'):
     """
     使用mettack数据集训练EdgeFlipMAE模型
@@ -211,10 +215,10 @@ def train_edgeflip_mae_with_mettack_data(dataset_dict,
         hid_dim=hid_dim,
         num_layer=num_layer,
         device=device,
-        mask_rate=0.15,
-        noise_rate=0.1,
+        mask_rate=mask_rate,
+        noise_rate=noise_rate,
         learning_rate=learning_rate,
-        weight_decay=5e-4,
+        weight_decay=weight_decay,
         epochs=epochs
     )
     
@@ -274,11 +278,14 @@ def main_integration_example():
     model = train_edgeflip_mae_with_mettack_data(
         dataset_dict=dataset_dict,
         gnn_type='GCN',
-        hid_dim=64,
+        hid_dim=32,          # 修改为32维隐藏层
         num_layer=2,
-        epochs=50,  # 为了演示，使用较少的epoch
+        epochs=200,          # 增加训练轮数
         batch_size=64,
-        learning_rate=0.001
+        learning_rate=0.001,
+        weight_decay=5e-4,   # 添加权重衰减
+        mask_rate=0.15,      # 节点掩码率
+        noise_rate=0.1       # 噪声率
     )
     
     print("\n=== 集成完成 ===")

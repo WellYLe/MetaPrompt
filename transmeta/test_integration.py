@@ -116,14 +116,18 @@ def test_model_initialization(node_feat_dim):
     print("\n=== 测试4: 模型初始化 ===")
     
     try:
-        # 初始化EdgeFlipMAE模型
+        # 初始化EdgeFlipMAE模型 - 使用与Cora数据集匹配的参数
         model = EdgeFlipMAE(
             gnn_type='GCN',
+            dataset_name='Cora',
             input_dim=node_feat_dim,
-            hid_dim=32,  # 使用较小的维度进行测试
+            hid_dim=32,  # 使用32维隐藏层以匹配预训练模型
             num_layer=2,
             mask_rate=0.15,
-            noise_rate=0.1
+            noise_rate=0.1,
+            learning_rate=0.001,
+            weight_decay=5e-4,
+            epochs=200
         )
         
         print(f"✅ 模型初始化成功")
@@ -184,7 +188,7 @@ def test_short_training(model):
         
         # 临时修改epochs进行短时间训练
         original_epochs = model.epochs
-        model.epochs = 50
+        model.epochs = 10  # 减少测试时的训练轮数
         
         # 进行短时间训练
         model.pretrain(batch_size=32)  # 使用较小的batch size

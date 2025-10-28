@@ -143,7 +143,7 @@ class EdgeFlipMAELoss(nn.Module):
 class EdgeFlipMAE(PreTrain):
     """基于MAE框架的边翻转检测模型"""
     
-    def __init__(self, gnn_type='GCN', dataset_name='Cora', input_dim=100, hid_dim=64, 
+    def __init__(self, gnn_type='GCN', dataset_name='Cora', input_dim=1433, hid_dim=32, 
                  num_layer=2, device=0, mask_rate=0.15, noise_rate=0.1, 
                  learning_rate=0.001, weight_decay=5e-4, epochs=200, **kwargs):
         
