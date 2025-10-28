@@ -89,59 +89,6 @@ class BaseMeta(BaseAttack):
 
     def attack(self, adj, labels, n_perturbations):
         pass
-    def imitation_model_train(self, augmentation_list):
-        """
-        the reason why we should train an imitation model is that
-        when you use edge_index or torch.SparseTensor as input form of topology in pretrain model created by torch_geometric.nn
-        the gradients of adj can not be got.
-        Therefore, the imitation model will output the embeddings like pretrain model, but take
-        adj as input form of topology.
-
-        If you are interested in bridging the gap between deeoprobust(adj as input) and torch_geometric(edge_index as input),
-        see https://github.com/pyg-team/pytorch_geometric/issues/1511
-        https://github.com/DSE-MSU/DeepRobust/issues/118
-
-        But we still can not think a by-pass expect this function.
-        """
-        # we dont want there be so many hyper-parameters,
-        # So if you want, you can set surrogate_model, its layer_num and so on as class_number
-        self.Linearized_GCN = Linearized_GCN(self.input_dim, self.hid_dim).to(self.device)
-        adj_ori_ = copy.deepcopy(self.adj_ori.data.to('cpu'))
-        x_ = copy.deepcopy(self.x.data.to('cpu'))
-
-        # here comes an assumption that in the augmentation will probably used in the process of pretraining
-        # such as GCL DGI with augmentation
-        optimizer = torch.optim.Adam(self.Linearized_GCN.parameters(), lr=0.01, weight_decay=5e-4)
-        patience = 10
-        for augmentation_func in augmentation_list:
-            augmentation = augmentation_func(adj_ori_, x_, 0.2, self.undirected)
-            aug_adj, aug_feature = augmentation.augment()
-            aug_adj, aug_feature = aug_adj.to(self.device), aug_feature.to(self.device)
-            aug_edge_index_0, aug_edge_index_1 = torch.where(aug_adj == 1)
-            aug_edge_index = torch.stack([aug_edge_index_0, aug_edge_index_1], dim=0)
-            aug_adj_norm = self.normalize_adj_tensor(aug_adj)
-            train_loss_min = 1000000
-            cnt_wait = 0
-            for epoch in tqdm(range(100), desc="training the imitation model with " + augmentation.get_name()):
-                optimizer.zero_grad()
-                z1 = self.pretrain_gnn(aug_feature, aug_edge_index)
-                z2 = self.Linearized_GCN(aug_feature, aug_adj_norm)
-                z1 = F.normalize(z1, p=2, dim=1)
-                z2 = F.normalize(z2, p=2, dim=1)
-
-                loss = F.mse_loss(z1, z2)
-                loss.backward()
-                optimizer.step()
-
-                if train_loss_min > loss:
-                    train_loss_min = loss
-                    cnt_wait = 0
-                else:
-                    cnt_wait += 1
-                    if cnt_wait == patience:
-                        print('Early stopping at ' + str(epoch) + ' epoch!')
-                        break
-        self.Linearized_GCN.eval()  # replace pretrain_model with
         
     def get_modified_adj(self, ori_adj):#不动，依旧如此，因为这里只是接受安排，然后给个结果
         adj_changes_square = self.adj_changes - torch.diag(torch.diag(self.adj_changes, 0))
@@ -216,35 +163,27 @@ class GPF(torch.nn.Module):
         def add(self, x: torch.Tensor):
             return x + self.global_emb
         
-        def GPFTrain(self, train_loader,sur_loss):#怎么疑似可以不用换dataloader？
-            self.prompt.train()
-            total_loss = 0.0 
-            
-            for batch in train_loader:  
-                  self.optimizer.zero_grad() 
-                  batch = batch.to(self.device)
-                  batch.x = self.prompt.add(batch.x)
-                  out = self.surrogate.predict(self.weights,self.biases, batch.x, batch.edge_index, batch.batch, prompt = self.prompt, prompt_type = self.prompt_type)
-                  out = self.answering(out)
-                  loss = sur_loss(out, batch.y) 
-                  loss.backward()  
-                  self.optimizer.step()  
-                  total_loss += loss.item()  
-            return total_loss / len(train_loader) 
-        def GPFTrain1(self, train_graphs,sur_loss):
-            self.prompt.train()
+        def GPFTrain1(self, train_graphs,encoder):
+            #self.prompt.train() 暂时不要，因为没别的prompt
+            #train_graphs应该是稠密的图对象，比如load了cora之后，
+            #通过图划分，来获得一个个子图，每个子图有adj和attr两个键
             total_loss = 0.0             
             for batch in train_graphs:  
                   self.optimizer.zero_grad() 
                   batch = batch.to(self.device)
-                  batch.x = self.prompt.add(batch.x)
-                  batch.graph = Data(x=batch.x, edge_index=batch.edge_index)
+                  feature = dense_features_to_encoder_format(batch.attr)
+                  edge_index= dense_adj_to_edge_index(batch.adj)
+                  feature = encoder(feature, edge_index)
+                  feature = self.prompt.add(feature)
+                  batch.graph = create_graph_for_classifier(x=feature, edge_index=edge_index)
                   s = self.attacker.predict_graph_with_decisions_with_get_all_edges(batch.graph)['flip_probabilities']
-                  ori_adj = to_dense_adj(batch.edge_index, batch=batch.batch, max_num_nodes=batch.x.size(0))
-                  batch.adj = ori_adj * (torch.ones_like(ori_adj)-s)+(torch.ones_like(ori_adj)-ori_adj)*s
+                  
+                  adj = to_dense_adj(batch.adj, batch=batch.batch, max_num_nodes=batch.x.size(0))
+                  #batch.adj = ori_adj * (torch.ones_like(ori_adj)-s)+(torch.ones_like(ori_adj)-ori_adj)*s
+                  #这行是那个离散地判断某一条边是不是要反转的，但是优化过程中不能有哎
                   #其实这里如果能改成edge_index的形式是否效率上会更好？对于取负样本是否会存在影响？
                   #实际上最重要的修改是加边，那么就要考虑是否会少看到边
-                  out = self.surrogate.predict(batch.adj)
+                  out = self.surrogate.predict(adj)
                   out = self.answering(out)
                   criterion = nn.BCEWithLogitsLoss()
                   loss = criterion(out, batch.y)
@@ -286,7 +225,7 @@ class Metattack(BaseMeta):
 
     def __init__(self, model, nnodes, feature_shape=None, attack_structure=True, attack_features=False, undirected=True, 
                  device='cpu', with_bias=False, lambda_=0.5, train_iters=100, lr=0.1, momentum=0.9,attacker_encoder=None,attacker_classifier=None,
-                 prompt_type = None):
+                 prompt_type = "GPF"):
 
         super(Metattack, self).__init__(model, nnodes, feature_shape, lambda_, attack_structure, attack_features, undirected, device)
         self.momentum = momentum# 动量因子
@@ -412,20 +351,41 @@ class Metattack(BaseMeta):
 
         self.sparse_features = sp.issparse(ori_features)# 检查是否为稀疏矩阵
         ori_adj, ori_features, labels = utils.to_tensor(ori_adj, ori_features, labels, device=self.device)# 转换为张量
-        labels_self_training = self.self_training_label(labels, idx_train)# 自训练标签
+        #labels_self_training = self.self_training_label(labels, idx_train)# 自训练标签
         modified_adj = ori_adj# 复制原始邻接矩阵
         modified_features = ori_features# 复制原始特征矩阵
         self.surrogate = Linearized_GCN(nfeat=features.shape[1], nclass=labels.max().item()+1,
-            nhid=16, dropout=0, with_relu=False, with_bias=False, device='cpu').to('cpu')
+            nhid=16, dropout=0, with_relu=False, with_bias=False, device='cpu', task_type='node').to('cpu')
         self.surrogate.train(features, adj_norm, labels, idx_train, idx_unlabeled, patience=30)
-        #这里在clean graph上训练GCN
+        self.surrogate.train(dataset_name='Cora', 
+                   task_type='node',  # 'node' 或 'graph'
+                   learning_rate=0.05, 
+                   weight_decay=1e-4, 
+                   epochs=100, 
+                   device='cuda',
+                   verbose=True,
+                   early_stopping=False,
+                   patience=10,
+                   min_delta=1e-4)#这里在clean graph上训练可接收稠密矩阵的GCN
         #加载 cora 数据集
-        data = Dataset(root='/tmp/', name='cora')
-        adj, features, labels = data.adj, data.features, data.labels
-        idx_train, idx_val, idx_test = data.idx_train, data.idx_val, data.idx_test
+        # data = Dataset(root='/tmp/', name='cora')
+        # adj, features, labels = data.adj, data.features, data.labels
+        # idx_train, idx_val, idx_test = data.idx_train, data.idx_val, data.idx_test
 #####################FINISH TRAINING SURROGATE MODEL################################
         #这里导入在上游训练的判断图的Attacker模型，用于生成扰动
-        attacker = EdgeFlipMAE(ori_adj, ori_features, labels, idx_train, idx_unlabeled, self.device)
+        attacker = EdgeFlipMAE(
+            gnn_type='GCN',  # 使用GCN作为编码器
+            dataset_name='Cora',  # 数据集名称
+            input_dim=ori_features.shape[1],  # 输入特征维度
+            hid_dim=64,  # 隐藏层维度
+            num_layer=2,  # GNN层数
+            device=self.device,  # 设备
+            mask_rate=0.15,  # 掩码率
+            noise_rate=0.1,  # 噪声率
+            learning_rate=0.001,  # 学习率
+            weight_decay=5e-4,  # 权重衰减
+            epochs=200  # 训练轮数
+        )
         attacker.load_model(self.attacker_encoder, self.attacker_classifier)
         
         # modified_adj = attacker.modified_adj# 扰动后的邻接矩阵
@@ -436,7 +396,7 @@ class Metattack(BaseMeta):
         self.gnn = attacker
         #为什么好像别的文件调用self.prompt的时候都不需要再init函数中声明这个变量？
         self.initialize_optimizer()
-        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
+        # train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
 #####################FINISH INITIALIZING THE PROMPT################################     
    
 #####################FOLLOWING BEGIN TO ATTACK#####################################    
@@ -447,20 +407,20 @@ class Metattack(BaseMeta):
             if self.attack_structure:
                 modified_adj = self.get_modified_adj(ori_adj)# 更新扰动后的邻接矩阵
 
-            if self.attack_features:
-                modified_features = ori_features + self.feature_changes
+            # if self.attack_features:
+            #     modified_features = ori_features + self.feature_changes
             
             adj_norm = utils.normalize_adj_tensor(modified_adj)# 归一化扰动后的邻接矩阵
             #adj_grad = torch.autograd.grad(self.surrogate.predict(modified_features, adj_norm, idx_train, idx_unlabeled, labels), modified_adj, retain_graph=True)[0]# 用GCN模型预测并求梯度
             #这个地方没写怎么获得梯度的，但是我猜应该是用了torch.autograd.grad来获得的
-            GPF.GPFTrain1(train_graphs)
+            GPF.GPFTrain1(train_graphs)#这就是唯一的训练过程
             #在这个里面p被更新，每一轮攻击实际上是用一整个图子图化后对GNN+GPL进行训练
             adj_meta_score = torch.tensor(0.0).to(self.device)
             feature_meta_score = torch.tensor(0.0).to(self.device)
+            #GPL此时已经被训练好了
             if self.attack_structure:
-                adj_meta_score = attacker.predict_graph_with_decisions_with_get_all_edges(modified_adj)['flip_probabilities']
-                #返回一个矩阵，意味着此时带有提示的GNN对每条边的预测结果
-                #但是接受的参数还没对齐，可能需要写一个dataloader
+                adj_meta_score = attacker.predict_graph_with_decisions_with_get_all_edges(self.prompt,modified_adj)['flip_probabilities']
+            #这里预测一下，做最终判断就行
                 feature_meta_score = self.get_feature_score(feature_grad, modified_features)
             
             if adj_meta_score.max() >= feature_meta_score.max():

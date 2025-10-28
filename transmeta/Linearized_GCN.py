@@ -57,11 +57,11 @@ class GCNConvolution(nn.Module):
 
 
 class Linearized_GCN(torch.nn.Module):    
-    def __init__(self, input_dim, hid_dim, out_dim=None, num_layer=2, bias=False):
+    def __init__(self, input_dim, hid_dim, out_dim=None, num_layer=2, bias=False, task_type='node'):
         super().__init__()
 
         GraphConv = GCNConvolution
-        
+        self.task_type = task_type
         assert 1<num_layer, "please set num_layer>1"
 
         if out_dim is None:
