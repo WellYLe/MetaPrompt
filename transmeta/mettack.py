@@ -34,6 +34,9 @@ from torch_geometric.utils import degree
 from torch_geometric.loader import DataLoader
 from DeepRobust.deeprobust.graph.defense.gcn import GCN
 from EdgeFlipMAE import EdgeFlipMAE
+from utils.edge_index_to_adjacency_matrix import edge_index_to_adjacency_matrix
+from utils.edge_index_to_sparse_matrix import edge_index_to_sparse_matrix
+from data_converter import *
 
 
 class BaseMeta(BaseAttack):
@@ -166,7 +169,16 @@ class GPF(torch.nn.Module):
         def GPFTrain1(self, train_graphs,encoder):
             #self.prompt.train() 暂时不要，因为没别的prompt
             #train_graphs应该是稠密的图对象，比如load了cora之后，
-            #通过图划分，来获得一个个子图，每个子图有adj和attr两个键
+            #通过图划分，来获得一个个子图，每个子图有adj和attr两个键，分别对应邻接矩阵和特征矩阵
+            #每个子图还会有batch键，对应着每个节点所属的子图编号
+            #每个子图还会有y键，对应着每个节点的标签
+            #每个子图还会有train_mask, val_mask, test_mask键，对应着每个节点的训练集、验证集、测试集掩码
+            #每个子图还会有edge_index键，对应着边的索引
+            #每个子图还会有num_nodes键，对应着节点的数量
+            #每个子图还会有num_edges键，对应着边的数量
+            #每个子图还会有num_features键，对应着特征的维度
+            #每个子图还会有num_classes键，对应着类别的数量
+            #每个子图还会有graph键，对应着图对象
             total_loss = 0.0             
             for batch in train_graphs:  
                   self.optimizer.zero_grad() 
@@ -178,12 +190,13 @@ class GPF(torch.nn.Module):
                   batch.graph = create_graph_for_classifier(x=feature, edge_index=edge_index)
                   s = self.attacker.predict_graph_with_decisions_with_get_all_edges(batch.graph)['flip_probabilities']
                   
-                  adj = to_dense_adj(batch.adj, batch=batch.batch, max_num_nodes=batch.x.size(0))
+                  #adj = to_dense_adj(batch.adj, batch=batch.batch, max_num_nodes=batch.x.size(0))
                   #batch.adj = ori_adj * (torch.ones_like(ori_adj)-s)+(torch.ones_like(ori_adj)-ori_adj)*s
-                  #这行是那个离散地判断某一条边是不是要反转的，但是优化过程中不能有哎
+                  #这行是那个离散地判断某一条边是不是要反转的那个小公式，但是优化过程中不能有哎
+                  
                   #其实这里如果能改成edge_index的形式是否效率上会更好？对于取负样本是否会存在影响？
                   #实际上最重要的修改是加边，那么就要考虑是否会少看到边
-                  out = self.surrogate.predict(adj)
+                  out = self.surrogate.predict(s,feature)
                   out = self.answering(out)
                   criterion = nn.BCEWithLogitsLoss()
                   loss = criterion(out, batch.y)
@@ -413,7 +426,8 @@ class Metattack(BaseMeta):
             adj_norm = utils.normalize_adj_tensor(modified_adj)# 归一化扰动后的邻接矩阵
             #adj_grad = torch.autograd.grad(self.surrogate.predict(modified_features, adj_norm, idx_train, idx_unlabeled, labels), modified_adj, retain_graph=True)[0]# 用GCN模型预测并求梯度
             #这个地方没写怎么获得梯度的，但是我猜应该是用了torch.autograd.grad来获得的
-            GPF.GPFTrain1(train_graphs)#这就是唯一的训练过程
+            
+            GPF.GPFTrain1(train_graphs,attacker.encoder)#这就是唯一的训练过程
             #在这个里面p被更新，每一轮攻击实际上是用一整个图子图化后对GNN+GPL进行训练
             adj_meta_score = torch.tensor(0.0).to(self.device)
             feature_meta_score = torch.tensor(0.0).to(self.device)
