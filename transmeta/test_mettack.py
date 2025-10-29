@@ -12,7 +12,7 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), 'DeepRobust'
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 from deeprobust.graph.defense import GCN
-from mettack import Metattack
+from transfermeta import Metattack
 #from deeprobust.graph.global_attack.mettack import MetaEva
 from deeprobust.graph.utils import *
 from deeprobust.graph.data import Dataset

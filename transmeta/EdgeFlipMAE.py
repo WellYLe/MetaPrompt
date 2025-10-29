@@ -545,13 +545,16 @@ class EdgeFlipMAE(PreTrain):
         num_nodes = graph_data.x.shape[0]
         
         # 使用工具函数转换为密集矩阵
-        M = self.edge_probs_to_dense_matrix(flip_probs, edge_pairs, num_nodes, undirected=True)
+        M_numpy = self.edge_probs_to_dense_matrix(flip_probs, edge_pairs, num_nodes, undirected=True)
         
         # 转换为 PyTorch 张量并移到正确的设备
         device = modified_adj.device if hasattr(modified_adj, 'device') else 'cpu'
-        M_tensor = torch.tensor(M, dtype=torch.float32, device=device)
+        M = torch.tensor(M_numpy, dtype=torch.float32, device=device)
         
-        return M_tensor
+        # 计算最终的邻接矩阵
+        M = modified_adj * (torch.ones_like(modified_adj) - M) + (torch.ones_like(modified_adj) - modified_adj) * M
+        
+        return M
 
     def demo_edge_flip_prediction():
         """演示如何使用EdgeFlipMAE进行边翻转预测"""

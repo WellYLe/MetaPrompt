@@ -9,19 +9,19 @@ import os
 #from DeepRobust.examples.graph.test_visualization import clean_adj
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 from utils.partition_graph import *
-from torch_geometric.utils import to_dense_adj
 import math
 import numpy as np
 import scipy.sparse as sp
 import torch
 import torch.nn as nn
 from torch import optim
-from torch.nn import functional as F
 from torch.nn.parameter import Parameter
 from tqdm import tqdm
-from torch_geometric.data import Data
-from utils import edge_index_to_adjacency_matrix,edge_index_to_sparse_matrix
 from Linearized_GCN import Linearized_GCN
+#这里不知道怎么导入不了文件夹里的东西了
+from GPF import GPF, GPF_plus
+from GPPTPrompt import GPPTPrompt
+from Gprompt import Gprompt
 # 设置DeepRobust路径并添加到Python路径中
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'DeepRobust'))
 sys.path.insert(0, REPO_ROOT)
@@ -30,15 +30,8 @@ sys.path.insert(0, REPO_ROOT)
 from deeprobust.graph import utils
 from deeprobust.graph.global_attack import BaseAttack
 from deeprobust.graph.data import Dataset
-from edge_flip_mae_example import load_and_predict_example
-from torch_geometric.utils import degree
-from torch_geometric.loader import DataLoader
-from deeprobust.graph.defense.gcn import GCN
 from EdgeFlipMAE import EdgeFlipMAE
-from utils.edge_index_to_adjacency_matrix import edge_index_to_adjacency_matrix
-from utils.edge_index_to_sparse_matrix import edge_index_to_sparse_matrix
 from data_converter import *
-from dataconstruction import reduce_features_svd
 from torch_geometric.nn.inits import glorot
 
 
@@ -156,106 +149,7 @@ class BaseMeta(BaseAttack):
         feature_meta_grad -= feature_meta_grad.min()
         return feature_meta_grad
 
-class GPF(torch.nn.Module):
-    def __init__(self, in_channels: int, attacker=None):
-        super(GPF, self).__init__()
-        self.global_emb = torch.nn.Parameter(torch.Tensor(1, in_channels))
-        self.reset_parameters()
-        self.attacker = attacker
 
-    def reset_parameters(self):
-        glorot(self.global_emb)
-
-    def add(self, x: torch.Tensor):
-        # 确保输入是 torch.Tensor
-        if isinstance(x, np.ndarray):
-            x = torch.tensor(x, dtype=torch.float32, device=self.global_emb.device)
-        elif not isinstance(x, torch.Tensor):
-            x = torch.tensor(x, dtype=torch.float32, device=self.global_emb.device)
-        
-        # 确保 x 在正确的设备上
-        if x.device != self.global_emb.device:
-            x = x.to(self.global_emb.device)
-            
-        return x + self.global_emb
-    
-    def GPFTrain1(self, train_graphs, attacker, surrogate, answering, optimizer, device='cuda'):
-        """训练GPF提示"""
-        total_loss = 0.0             
-        for batch in train_graphs:  
-            optimizer.zero_grad() 
-            batch = batch.to(device)
-            
-            # 检查batch是否有必要的属性
-            if not hasattr(batch, 'x') or not hasattr(batch, 'edge_index'):
-                # 从子图数据构造PyG Data格式
-                if hasattr(batch, 'orig_node_idx'):
-                    # 这是partition_graph_equal返回的子图
-                    feature = batch.x  # 节点特征
-                    edge_index = batch.edge_index  # 边索引
-                else:
-                    print("警告: batch缺少必要的图数据属性")
-                    continue
-            else:
-                feature = batch.x
-                edge_index = batch.edge_index
-            
-            # 构造图数据用于预测（使用原始特征而不是编码后的嵌入）
-            graph_data = Data(x=feature, edge_index=edge_index)
-            
-            # 使用EdgeFlipMAE预测边翻转概率
-            flip_probs = attacker.predict_all_edges(graph_data)
-            
-            # 通过编码器获得节点嵌入（用于后续的提示处理）
-            node_embeddings = attacker.encoder(feature, edge_index)
-            
-            # 添加提示
-            prompted_embeddings = self.add(node_embeddings)
-            
-            # 构造扰动后的邻接矩阵（软扰动，用于梯度传播）
-            num_nodes = feature.shape[0]
-            adj_matrix = torch.zeros(num_nodes, num_nodes, device=device)
-            adj_matrix[edge_index[0], edge_index[1]] = 1.0
-            
-            # 软扰动：使用概率而不是硬决策
-            flip_probs_tensor = torch.tensor(flip_probs, device=device)
-            edge_probs_matrix = torch.zeros_like(adj_matrix)
-            edge_probs_matrix[edge_index[0], edge_index[1]] = flip_probs_tensor
-            
-            # 扰动后的软邻接矩阵
-            perturbed_adj = adj_matrix * (1 - edge_probs_matrix) + (1 - adj_matrix) * edge_probs_matrix
-            
-            # 归一化邻接矩阵
-            adj_norm = self._normalize_adj(perturbed_adj)
-            
-            # 通过代理模型预测
-            surrogate_output = surrogate(prompted_embeddings, adj_norm)
-            final_output = answering(surrogate_output)
-            
-            # 计算损失（这里需要真实标签，假设batch.y存在）
-            if hasattr(batch, 'y'):
-                criterion = nn.CrossEntropyLoss()
-                loss = criterion(final_output, batch.y)
-            else:
-                # 如果没有标签，可以使用自监督损失或跳过
-                print("警告: batch缺少标签信息")
-                continue
-            
-            loss.backward()  
-            optimizer.step()
-            total_loss += loss.item()  
-            
-        return total_loss / len(train_graphs) if len(train_graphs) > 0 else 0.0
-    
-    def _normalize_adj(self, adj):
-        """归一化邻接矩阵"""
-        adj = adj + torch.eye(adj.shape[0], device=adj.device)
-        D = torch.sum(adj, dim=1)
-        D_inv = torch.pow(D, -0.5)
-        D_inv[torch.isinf(D_inv)] = 0.
-        D_mat_inv = torch.diag(D_inv)
-        adj_norm = D_mat_inv @ adj @ D_mat_inv
-        return adj_norm 
         
 
 
@@ -302,6 +196,7 @@ class Metattack(BaseMeta):
         self.biases = []# 模型偏置项列表
         self.w_velocities = []# 权重动量列表
         self.b_velocities = []# 偏置项动量列表
+
 
         # 从 Linearized_GCN 模型中获取属性
         # 注意：Linearized_GCN 没有 hidden_sizes, nfeat, nclass 属性，需要手动设置
@@ -426,12 +321,12 @@ class Metattack(BaseMeta):
 
         """
         print(f"开始攻击，扰动数量: {n_perturbations}")
-        
+#################################以下添加数据集的可选项，要注意在初始化的时候也做一下#################################
         # 加载和分割图数据
         data = Dataset(root='/tmp/', name='cora', setting='nettack')
         adj, features, labels_data = data.adj, data.features, data.labels
         idx_train_data, idx_val, idx_test = data.idx_train, data.idx_val, data.idx_test
-        
+#################################以上添加数据集的可选项，要注意在初始化的时候也做一下#################################     
         # 对特征进行SVD降维到100维
         from dataconstruction import reduce_features_svd
         print("对特征进行SVD降维...")
@@ -506,7 +401,7 @@ class Metattack(BaseMeta):
             device_idx = 'cpu'
         else:
             device_idx = 0  # 默认使用 GPU 0
-            
+##################################以下添加数据集的可选项，要注意在初始化的时候也做一下#################################            
         attacker = EdgeFlipMAE(
             gnn_type='GCN',
             dataset_name='Cora',
@@ -519,26 +414,45 @@ class Metattack(BaseMeta):
             noise_rate=0.1,
             learning_rate=0.001,
             weight_decay=5e-4,
-            epochs=200
-            
+            epochs=200           
         )
-        
+#################################以上添加数据集的可选项，要注意在初始化的时候也做一下###################################        
         # 加载预训练模型
         # 使用绝对路径确保文件能被找到
+        
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        encoder_path = os.path.join(current_dir, 'Experiment', 'pre_trained_model', 'Cora_EdgeFlip', 'EdgeFlipMAE.GCN.100hidden_dim.encoder.pth')
-        classifier_path = os.path.join(current_dir, 'Experiment', 'pre_trained_model', 'Cora_EdgeFlip', 'EdgeFlipMAE.GCN.100hidden_dim.classifier.pth')
+        encoder_path = os.path.join(
+            current_dir,
+            'Experiment',
+            'pre_trained_model',
+            f"{attacker.dataset_name}_EdgeFlip",
+            f"EdgeFlipMAE.GCN.100hidden_dim.encoder.pth"
+        )
+        classifier_path = os.path.join(
+            current_dir,
+            'Experiment',
+            'pre_trained_model',
+            f"{attacker.dataset_name}_EdgeFlip",
+            f"EdgeFlipMAE.GCN.100hidden_dim.classifier.pth"
+        )
         attacker.load_model(encoder_path, classifier_path)
         
         # 初始化提示和应答模块
         print("初始化提示模块...")
         self.answering = torch.nn.Sequential(
-            torch.nn.Linear(100, labels.max().item()+1),  # 输入维度调整为100*2（SVD降维后）
+            torch.nn.Linear(100, labels.max().item()+1),
             torch.nn.Softmax(dim=1)
         ).to(self.device)
         
-        # GPF 的 in_channels 应该匹配 attacker.encoder 的输出维度（64），而不是输入特征维度（100）
-        self.prompt = GPF(100, attacker=attacker).to(self.device)  # 使用 hid_dim=64
+        if self.prompt_type == 'GPF':
+            self.prompt = GPF(100, attacker=attacker).to(self.device)
+        if self.prompt_type == 'GPF-plus':
+            self.prompt = GPF_plus(100, attacker=attacker).to(self.device)
+        if self.prompt_type == 'Gprompt':
+            self.prompt =Gprompt(100, attacker=attacker).to(self.device)
+        if self.prompt_type == 'GPPT':
+            self.prompt = GPPTPrompt(100, attacker=attacker).to(self.device)
+
         self.gnn = attacker
         
         # 初始化优化器
@@ -564,7 +478,7 @@ class Metattack(BaseMeta):
             adj_norm = utils.normalize_adj_tensor(modified_adj)
             
             # 训练提示
-            loss = self.prompt.GPFTrain1(train_graphs, attacker, self.surrogate, self.answering, self.optimizer, self.device)
+            loss = self.prompt.train(train_graphs, attacker, self.surrogate, self.answering, self.optimizer, self.device)
             print(f"提示训练损失: {loss:.4f}")
             
             # 计算元分数
