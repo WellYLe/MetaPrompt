@@ -69,7 +69,7 @@ def load_mettack_dataset(npz_path, meta_path=None):
 
 def extract_node_features_from_pairs(X_pairs, pairs, n_nodes=None):
     """
-    从节点对特征中提取单个节点的特征
+    从节点对特征中提取单个节点的特征，并确保特征维度为100
     
     Args:
         X_pairs: (M, 2*F + k) 节点对特征矩阵
@@ -77,7 +77,7 @@ def extract_node_features_from_pairs(X_pairs, pairs, n_nodes=None):
         n_nodes: 图中节点总数，如果为None则自动推断
     
     Returns:
-        node_features: (N, F) 节点特征矩阵
+        node_features: (N, 100) 节点特征矩阵，通过SVD降维到100维
     """
     print("=== 从节点对特征中提取单个节点特征 ===")
     
@@ -125,7 +125,15 @@ def extract_node_features_from_pairs(X_pairs, pairs, n_nodes=None):
             # 未出现的节点使用随机特征
             node_features[i] = np.random.randn(node_feat_dim) * 0.1
     
-    print(f"提取的节点特征形状: {node_features.shape}")
+    # 如果特征维度不是100，进行SVD降维
+    if node_feat_dim != 100:
+        print(f"特征维度 {node_feat_dim} != 100，进行SVD降维...")
+        from dataconstruction import reduce_features_svd
+        node_features_reduced, _ = reduce_features_svd(node_features, n_components=100, random_state=42)
+        print(f"降维后特征形状: {node_features_reduced.shape}")
+        node_features = node_features_reduced
+    
+    print(f"最终节点特征形状: {node_features.shape}")
     print(f"有效节点数量: {np.sum(node_count > 0)}")
     
     return node_features
@@ -164,7 +172,7 @@ def create_graph_from_pairs(pairs, node_features):
 
 def train_edgeflip_mae_with_mettack_data(dataset_dict, 
                                         gnn_type='GCN',
-                                        hid_dim=32,  # 修改为32以匹配预期的隐藏维度
+                                        hid_dim=64,  # 修改为64以匹配统一的隐藏维度
                                         num_layer=2,
                                         epochs=200,  # 增加训练轮数
                                         batch_size=64,
@@ -278,7 +286,7 @@ def main_integration_example():
     model = train_edgeflip_mae_with_mettack_data(
         dataset_dict=dataset_dict,
         gnn_type='GCN',
-        hid_dim=32,          # 修改为32维隐藏层
+        hid_dim=64,          # 修改为64维隐藏层
         num_layer=2,
         epochs=200,          # 增加训练轮数
         batch_size=64,

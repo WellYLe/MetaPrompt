@@ -421,6 +421,16 @@ class Metattack(BaseMeta):
         adj, features, labels_data = data.adj, data.features, data.labels
         idx_train_data, idx_val, idx_test = data.idx_train, data.idx_val, data.idx_test
         
+        # 对特征进行SVD降维到100维
+        from dataconstruction import reduce_features_svd
+        print("对特征进行SVD降维...")
+        features_dense = features.toarray() if hasattr(features, 'toarray') else features
+        ori_features_reduced, svd_model = reduce_features_svd(features_dense, n_components=100, random_state=42)
+        print(f"特征维度从 {features_dense.shape[1]} 降维到 {ori_features_reduced.shape[1]}")
+        
+        # 更新ori_features为降维后的特征
+        ori_features = ori_features_reduced
+        
         # 图分割 - 需要先将数据转换为 PyTorch Geometric Data 格式
         from torch_geometric.data import Data
         
@@ -443,7 +453,7 @@ class Metattack(BaseMeta):
         print("初始化并训练代理模型...")
         self.surrogate = Linearized_GCN(input_dim=ori_features.shape[1], 
                                        hid_dim=16,
-                                       out_dim=labels.max().item()+1,
+                                       out_dim=100,
                                        num_layer=2, 
                                        bias=False, 
                                        task_type='node').to(self.device)
@@ -479,8 +489,8 @@ class Metattack(BaseMeta):
         attacker = EdgeFlipMAE(
             gnn_type='GCN',
             dataset_name='Cora',
-            input_dim=ori_features.shape[1],  # 1433维输入
-            hid_dim=ori_features.shape[1],  # 1433维输出，保持维度一致
+            input_dim=100,  # SVD降维后的特征维度
+            hid_dim=64,     # 隐藏层维度设为64
             num_layer=2,
             device=device_idx,
             mask_rate=0.15,
@@ -493,19 +503,19 @@ class Metattack(BaseMeta):
         # 加载预训练模型
         # 使用绝对路径确保文件能被找到
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        encoder_path = os.path.join(current_dir, 'Experiment', 'pre_trained_model', 'Cora', 'EdgeFlipMAE.GCN.32hidden_dim.encoder.pth')
-        classifier_path = os.path.join(current_dir, 'Experiment', 'pre_trained_model', 'Cora', 'EdgeFlipMAE.GCN.32hidden_dim.classifier.pth')
+        encoder_path = os.path.join(current_dir, 'Experiment', 'pre_trained_model', 'Cora', 'EdgeFlipMAE.GCN.64hidden_dim.encoder.pth')
+        classifier_path = os.path.join(current_dir, 'Experiment', 'pre_trained_model', 'Cora', 'EdgeFlipMAE.GCN.64hidden_dim.classifier.pth')
         attacker.load_model(encoder_path, classifier_path)
         
         # 初始化提示和应答模块
         print("初始化提示模块...")
         self.answering = torch.nn.Sequential(
-            torch.nn.Linear(ori_features.shape[1] * 2, labels.max().item()+1),  # 输入维度调整为1433*2
+            torch.nn.Linear(100 * 2, labels.max().item()+1),  # 输入维度调整为100*2（SVD降维后）
             torch.nn.Softmax(dim=1)
         ).to(self.device)
         
-        # GPF 的 in_channels 应该匹配 attacker.encoder 的输出维度（32），而不是输入特征维度（1433）
-        self.prompt = GPF(32, attacker=attacker).to(self.device)  # 使用 hid_dim=32
+        # GPF 的 in_channels 应该匹配 attacker.encoder 的输出维度（64），而不是输入特征维度（100）
+        self.prompt = GPF(64, attacker=attacker).to(self.device)  # 使用 hid_dim=64
         self.gnn = attacker
         
         # 初始化优化器

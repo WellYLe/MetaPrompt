@@ -1,3 +1,4 @@
+#这个文件是可行的训练mae的文件
 import os 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import torch

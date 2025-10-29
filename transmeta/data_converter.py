@@ -1,3 +1,4 @@
+#这个文件是为了转换稠密矩阵和稀疏矩阵，以及将图数据转换为PyG Data对象
 import torch
 import numpy as np
 from torch_geometric.data import Data
