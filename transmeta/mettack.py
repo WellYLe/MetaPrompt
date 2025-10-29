@@ -38,6 +38,7 @@ from EdgeFlipMAE import EdgeFlipMAE
 from utils.edge_index_to_adjacency_matrix import edge_index_to_adjacency_matrix
 from utils.edge_index_to_sparse_matrix import edge_index_to_sparse_matrix
 from data_converter import *
+from dataconstruction import reduce_features_svd
 from torch_geometric.nn.inits import glorot
 
 
@@ -166,6 +167,16 @@ class GPF(torch.nn.Module):
         glorot(self.global_emb)
 
     def add(self, x: torch.Tensor):
+        # 确保输入是 torch.Tensor
+        if isinstance(x, np.ndarray):
+            x = torch.tensor(x, dtype=torch.float32, device=self.global_emb.device)
+        elif not isinstance(x, torch.Tensor):
+            x = torch.tensor(x, dtype=torch.float32, device=self.global_emb.device)
+        
+        # 确保 x 在正确的设备上
+        if x.device != self.global_emb.device:
+            x = x.to(self.global_emb.device)
+            
         return x + self.global_emb
     
     def GPFTrain1(self, train_graphs, attacker, surrogate, answering, optimizer, device='cuda'):
@@ -436,7 +447,7 @@ class Metattack(BaseMeta):
         
         # 将 scipy sparse matrix 转换为 edge_index
         edge_index = torch.tensor(np.array(adj.nonzero()), dtype=torch.long)
-        x = torch.tensor(features.toarray() if hasattr(features, 'toarray') else features, dtype=torch.float)
+        x = torch.tensor(ori_features_reduced, dtype=torch.float)  # 使用降维后的特征
         y = torch.tensor(labels_data, dtype=torch.long)
         
         # 创建 Data 对象
@@ -447,11 +458,21 @@ class Metattack(BaseMeta):
         
         # 转换为张量
         self.sparse_features = sp.issparse(ori_features)
-        ori_adj, ori_features, labels = utils.to_tensor(ori_adj, ori_features, labels, device=self.device)
+        
+        # 在转换为张量之前进行SVD降维
+        print("对特征进行SVD降维到100维...")
+        if sp.issparse(ori_features):
+            features_reduced, self.svd_model = reduce_features_svd(ori_features, n_components=100, random_state=42, do_scale=True)
+        else:
+            features_reduced, self.svd_model = reduce_features_svd(ori_features, n_components=100, random_state=42, do_scale=True)
+        
+        print(f"特征维度从 {ori_features.shape[1]} 降维到 {features_reduced.shape[1]}")
+        
+        ori_adj, features_reduced, labels = utils.to_tensor(ori_adj, features_reduced, labels, device=self.device)
         
         # 初始化代理模型并训练
         print("初始化并训练代理模型...")
-        self.surrogate = Linearized_GCN(input_dim=ori_features.shape[1], 
+        self.surrogate = Linearized_GCN(input_dim=features_reduced.shape[1],  # 使用降维后的特征维度
                                        hid_dim=16,
                                        out_dim=100,
                                        num_layer=2, 
@@ -466,7 +487,7 @@ class Metattack(BaseMeta):
         # 使用简单的 fit 方法训练代理模型
         print("训练代理模型...")
         self.surrogate.fit(
-            x=ori_features,
+            x=features_reduced,  # 使用降维后的特征
             adj_norm=adj_norm,
             y=labels,
             learning_rate=0.01,
@@ -489,8 +510,9 @@ class Metattack(BaseMeta):
         attacker = EdgeFlipMAE(
             gnn_type='GCN',
             dataset_name='Cora',
-            input_dim=100,  # SVD降维后的特征维度
-            hid_dim=64,     # 隐藏层维度设为64
+            input_dim=100,  # SVD降维后的特征维度固定为100
+            hid_dim=100,     # 隐藏层维度设为64
+            #out_dim=100,    # 输出维度设为100
             num_layer=2,
             device=device_idx,
             mask_rate=0.15,
@@ -498,24 +520,25 @@ class Metattack(BaseMeta):
             learning_rate=0.001,
             weight_decay=5e-4,
             epochs=200
+            
         )
         
         # 加载预训练模型
         # 使用绝对路径确保文件能被找到
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        encoder_path = os.path.join(current_dir, 'Experiment', 'pre_trained_model', 'Cora', 'EdgeFlipMAE.GCN.64hidden_dim.encoder.pth')
-        classifier_path = os.path.join(current_dir, 'Experiment', 'pre_trained_model', 'Cora', 'EdgeFlipMAE.GCN.64hidden_dim.classifier.pth')
+        encoder_path = os.path.join(current_dir, 'Experiment', 'pre_trained_model', 'Cora_EdgeFlip', 'EdgeFlipMAE.GCN.100hidden_dim.encoder.pth')
+        classifier_path = os.path.join(current_dir, 'Experiment', 'pre_trained_model', 'Cora_EdgeFlip', 'EdgeFlipMAE.GCN.100hidden_dim.classifier.pth')
         attacker.load_model(encoder_path, classifier_path)
         
         # 初始化提示和应答模块
         print("初始化提示模块...")
         self.answering = torch.nn.Sequential(
-            torch.nn.Linear(100 * 2, labels.max().item()+1),  # 输入维度调整为100*2（SVD降维后）
+            torch.nn.Linear(100, labels.max().item()+1),  # 输入维度调整为100*2（SVD降维后）
             torch.nn.Softmax(dim=1)
         ).to(self.device)
         
         # GPF 的 in_channels 应该匹配 attacker.encoder 的输出维度（64），而不是输入特征维度（100）
-        self.prompt = GPF(64, attacker=attacker).to(self.device)  # 使用 hid_dim=64
+        self.prompt = GPF(100, attacker=attacker).to(self.device)  # 使用 hid_dim=64
         self.gnn = attacker
         
         # 初始化优化器
@@ -550,7 +573,7 @@ class Metattack(BaseMeta):
             
             if self.attack_structure:
                 # 使用EdgeFlipMAE进行最终攻击决策
-                adj_meta_score = attacker.final_attack(self.prompt, attacker, modified_adj, modified_features)
+                adj_meta_score = attacker.final_attack(self.prompt,  modified_adj, modified_features, graph_data)
                 
             if self.attack_features:
                 # 计算特征梯度（简化实现）

@@ -93,13 +93,15 @@ def main():
     
     # 5. 初始化EdgeFlipMAE模型
     print("\n=== 初始化模型 ===")
+    # PreTrain基类期望device参数为整数（GPU编号），而不是torch.device对象
+    device_id = 0 if torch.cuda.is_available() else -1  # -1表示CPU，0表示GPU:0
     model = EdgeFlipMAE(
         gnn_type='GCN',
         dataset_name='Cora_EdgeFlip',
         input_dim=X_reduced.shape[1],
-        hid_dim=64,
+        hid_dim=100,
         num_layer=2,
-        device=device,  # 统一使用 torch.device
+        device=device_id,  # 传递整数而不是torch.device对象
         mask_rate=0.15,
         noise_rate=0.1,
         learning_rate=0.001,

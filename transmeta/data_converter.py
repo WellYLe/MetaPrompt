@@ -86,7 +86,7 @@ def dense_adj_to_edge_index(adj_matrix, remove_self_loops=True, ensure_undirecte
     if isinstance(adj_matrix, np.ndarray):
         adj_np = adj_matrix
     elif isinstance(adj_matrix, torch.Tensor):
-        adj_np = adj_matrix.cpu().numpy()
+        adj_np = adj_matrix.detach().cpu().numpy()
     elif isinstance(adj_matrix, (list, tuple)):
         adj_np = np.array(adj_matrix)
     else:

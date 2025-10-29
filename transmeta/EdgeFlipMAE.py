@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from torch_geometric.data import Data
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 import time
+from data_converter import *
 
 # 添加ProG路径
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -427,22 +428,20 @@ class EdgeFlipMAE(PreTrain):
         return probs.cpu().numpy()
     
     def predict_graph_with_decisions_with_get_all_edges(self, graph_data):
-            """预测图中所有边的翻转情况并给出概率"""
-            # 获取所有边对
-            edge_index = graph_data.edge_index
-            edge_pairs = edge_index.t().cpu().numpy()  # [num_edges, 2]
-            
-            # 预测翻转概率
-            flip_probs = self.predict_edge_flips(edge_pairs, graph_data)
-            
-            # 基于阈值做决策
-            # flip_decisions = flip_probs > threshold
-            M = np.zeros((num_nodes, num_nodes), dtype=float)
-            for (u, v), p in zip(edge_pairs, flip_probs):
-                M[u, v] = p
-                if undirected:
-                    M[v, u] = p
-            return M
+        """预测图中所有边的翻转情况并给出概率"""
+        # 获取所有边对
+        edge_index = graph_data.edge_index
+        edge_pairs = edge_index.t().cpu().numpy()  # [num_edges, 2]
+        
+        # 预测翻转概率
+        flip_probs = self.predict_edge_flips(edge_pairs, graph_data)
+        
+        # 获取节点数
+        num_nodes = graph_data.x.shape[0]
+        
+        # 使用工具函数转换为密集矩阵
+        M = self.edge_probs_to_dense_matrix(flip_probs, edge_pairs, num_nodes, undirected=True)
+        return M
 
             # return {
             #     'edge_pairs': edge_pairs,
@@ -453,7 +452,19 @@ class EdgeFlipMAE(PreTrain):
             #     'flip_ratio': np.mean(flip_decisions),
             #     'avg_flip_prob': np.mean(flip_probs)
             # }
+    @staticmethod
     def edge_probs_to_dense_matrix(flip_probs, edge_pairs, num_nodes, undirected=True):
+        """将边概率转换为密集邻接矩阵
+        
+        Args:
+            flip_probs: 边翻转概率列表
+            edge_pairs: 边对列表 [(u1,v1), (u2,v2), ...]
+            num_nodes: 图中节点总数
+            undirected: 是否为无向图
+            
+        Returns:
+            np.ndarray: 密集概率矩阵
+        """
         M = np.zeros((num_nodes, num_nodes), dtype=float)
         for (u, v), p in zip(edge_pairs, flip_probs):
             M[u, v] = p
@@ -521,7 +532,7 @@ class EdgeFlipMAE(PreTrain):
         graph_data = Data(x=node_features, edge_index=edge_index)
         
         return graph_data
-    def final_attack(self, prompt, attacker, modified_adj, modified_features,graph_data):
+    def final_attack(self, prompt, modified_adj, modified_features,graph_data):
         """预测图中所有边的翻转情况并给出决策"""
             # 获取所有边对
         edge_index = dense_adj_to_edge_index(modified_adj)
@@ -531,12 +542,16 @@ class EdgeFlipMAE(PreTrain):
         # 预测翻转概率
         flip_probs = self.predict_edge_flips(edge_pairs, graph_data)
             
-        M = np.zeros((num_nodes, num_nodes), dtype=float)
-        for (u, v), p in zip(edge_pairs, flip_probs):
-            M[u, v] = p
-            if undirected:
-                M[v, u] = p
-        return M
+        num_nodes = graph_data.x.shape[0]
+        
+        # 使用工具函数转换为密集矩阵
+        M = self.edge_probs_to_dense_matrix(flip_probs, edge_pairs, num_nodes, undirected=True)
+        
+        # 转换为 PyTorch 张量并移到正确的设备
+        device = modified_adj.device if hasattr(modified_adj, 'device') else 'cpu'
+        M_tensor = torch.tensor(M, dtype=torch.float32, device=device)
+        
+        return M_tensor
 
     def demo_edge_flip_prediction():
         """演示如何使用EdgeFlipMAE进行边翻转预测"""
