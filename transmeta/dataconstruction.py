@@ -29,10 +29,19 @@ def ensure_undirected(adj):
     return adj
 
 def load_prog_data(path, make_undirected=True):
+    """
+    加载图数据，支持多种格式的npz文件
+    """
+    print(f"尝试加载文件: {path}")
+    
+    # 方法1: 尝试加载包含完整图数据的格式 (adj_data, attr_data等)
     try:
         data = np.load(path, allow_pickle=True)
+        print(f"文件包含的键: {list(data.keys())}")
+        
         if all(k in data for k in ['adj_data','adj_indices','adj_indptr','adj_shape']) and \
            all(k in data for k in ['attr_data','attr_indices','attr_indptr','attr_shape']):
+            print("检测到完整图数据格式")
             adj = sp.csr_matrix((data['adj_data'], data['adj_indices'], data['adj_indptr']),
                                 shape=tuple(data['adj_shape']))
             features = sp.csr_matrix((data['attr_data'], data['attr_indices'], data['attr_indptr']),
@@ -40,12 +49,38 @@ def load_prog_data(path, make_undirected=True):
             if make_undirected:
                 adj = ensure_undirected(adj)
             return adj, features
-    except Exception:
-        pass
-    adj = sp.load_npz(path).tocsr()
-    if make_undirected:
-        adj = ensure_undirected(adj)
-    return adj, None
+    except Exception as e:
+        print(f"方法1失败: {e}")
+    
+    # 方法2: 尝试加载标准scipy sparse格式
+    try:
+        print("尝试标准scipy sparse格式")
+        # 不使用allow_pickle，因为scipy.sparse格式不需要pickle
+        adj = sp.load_npz(path).tocsr()
+        print(f"成功加载邻接矩阵，形状: {adj.shape}")
+        if make_undirected:
+            adj = ensure_undirected(adj)
+        return adj, None
+    except Exception as e:
+        print(f"方法2失败: {e}")
+    
+    # 方法3: 尝试手动构建sparse矩阵
+    try:
+        print("尝试手动构建sparse矩阵")
+        data = np.load(path, allow_pickle=False)  # 不使用pickle
+        print(f"文件包含的键: {list(data.keys())}")
+        
+        if all(k in data for k in ['data', 'indices', 'indptr', 'shape']):
+            adj = sp.csr_matrix((data['data'], data['indices'], data['indptr']), 
+                               shape=tuple(data['shape']))
+            print(f"成功构建邻接矩阵，形状: {adj.shape}")
+            if make_undirected:
+                adj = ensure_undirected(adj)
+            return adj, None
+    except Exception as e:
+        print(f"方法3失败: {e}")
+    
+    raise RuntimeError(f"无法加载文件 {path}，尝试了所有可能的格式")
 
 def reduce_features_svd(features, n_components=100, random_state=42, do_scale=True):
     """
@@ -60,8 +95,21 @@ def reduce_features_svd(features, n_components=100, random_state=42, do_scale=Tr
         X_reduced = scaler.fit_transform(X_reduced)
     return X_reduced, svd  # return svd in case user wants to reuse
 
-def construct_edge_diff_dataset(adj_clean, adj_attack, X_reduced, balance=True, random_state=42):
+def construct_edge_diff_dataset(adj_clean, adj_attack, X_reduced, balance=True, balance_strategy='min', random_state=42):
     """
+    构建边翻转数据集
+    
+    Args:
+        adj_clean: 干净图的邻接矩阵
+        adj_attack: 攻击后图的邻接矩阵  
+        X_reduced: 降维后的节点特征
+        balance: 是否平衡正负样本
+        balance_strategy: 平衡策略
+            - 'min': 使用较少类别的样本数量（默认，确保1:1比例）
+            - 'pos': 使用正样本数量（对负样本下采样）
+            - 'neg': 使用负样本数量（对正样本下采样）
+        random_state: 随机种子
+        
     Returns:
       - edge_pairs: np.array shape (N_samples, 2) -- node indices
       - X_pairs: np.array shape (N_samples, 2 * reduced_dim) -- concatenated features
@@ -99,13 +147,38 @@ def construct_edge_diff_dataset(adj_clean, adj_attack, X_reduced, balance=True, 
     # balance positive/negative
     if balance:
         n_pos = len(pos_edges)
+        n_neg = len(unchanged_edges)
+        
         if n_pos == 0:
             raise ValueError("No flipped edges (pos==0). Check adj_attack vs adj_clean.")
-        # shuffle unchanged and pick same amount
+        if n_neg == 0:
+            raise ValueError("No unchanged edges (neg==0). Check inputs.")
+        
+        print(f"原始样本数量: 正样本 {n_pos}, 负样本 {n_neg}")
+        
+        # 根据平衡策略选择目标样本数
+        if balance_strategy == 'min':
+            target_samples = min(n_pos, n_neg)
+        elif balance_strategy == 'pos':
+            target_samples = n_pos
+        elif balance_strategy == 'neg':
+            target_samples = n_neg
+        else:
+            raise ValueError(f"Unknown balance_strategy: {balance_strategy}. "
+                           "Choose from 'min', 'pos', 'neg'")
+        
+        # 对正样本进行采样
+        rng.shuffle(pos_edges)
+        pos_edges = pos_edges[:target_samples]
+        
+        # 对负样本进行采样
         rng.shuffle(unchanged_edges)
-        neg_edges = unchanged_edges[:n_pos]
+        neg_edges = unchanged_edges[:target_samples]
+        
+        print(f"平衡采样结果 (策略: {balance_strategy}): 正样本 {len(pos_edges)}, 负样本 {len(neg_edges)}")
     else:
         neg_edges = unchanged_edges
+        print(f"不平衡模式: 正样本 {len(pos_edges)}, 负样本 {len(neg_edges)}")
 
     all_edges = pos_edges + neg_edges
     labels = np.array([1]*len(pos_edges) + [0]*len(neg_edges), dtype=np.int64)

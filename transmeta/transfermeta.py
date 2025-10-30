@@ -21,7 +21,7 @@ from Linearized_GCN import Linearized_GCN
 #这里不知道怎么导入不了文件夹里的东西了
 from GPF import GPF, GPF_plus
 from GPPTPrompt import GPPTPrompt
-from Gprompt import Gprompt
+#from Gprompt import Gprompt
 # 设置DeepRobust路径并添加到Python路径中
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'DeepRobust'))
 sys.path.insert(0, REPO_ROOT)
@@ -404,7 +404,7 @@ class Metattack(BaseMeta):
 ##################################以下添加数据集的可选项，要注意在初始化的时候也做一下#################################            
         attacker = EdgeFlipMAE(
             gnn_type='GCN',
-            dataset_name='Cora',
+            dataset_name='PubMed',
             input_dim=100,  # SVD降维后的特征维度固定为100
             hid_dim=100,     # 隐藏层维度设为64
             #out_dim=100,    # 输出维度设为100
@@ -435,6 +435,8 @@ class Metattack(BaseMeta):
             f"{attacker.dataset_name}_EdgeFlip",
             f"EdgeFlipMAE.GCN.100hidden_dim.classifier.pth"
         )
+        print(f"加载编码器模型: {encoder_path}")
+        print(f"加载分类器模型: {classifier_path}")
         attacker.load_model(encoder_path, classifier_path)
         
         # 初始化提示和应答模块

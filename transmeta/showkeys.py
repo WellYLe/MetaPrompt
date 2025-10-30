@@ -1,7 +1,7 @@
 import numpy as np
 
 # 加载 npz 文件，允许加载 pickle 对象
-npz_file = np.load(r'c:\Users\11326\Desktop\MetaPrompt\DeepRobust\examples\graph\tmp\cora.npz', allow_pickle=True)
+npz_file = np.load(r'c:/Users/11326/Desktop/MetaPrompt/DeepRobust/examples/graph/tmp/pubmed.npz', allow_pickle=True)
 
 print("NPZ 文件中的键:")
 print("=" * 30)

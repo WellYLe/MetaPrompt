@@ -21,41 +21,66 @@ def ensure_undirected(adj):
     return adj
 
 def load_adj_npz(path):
-    # 兼容 DeepRobust 数据包格式（adj_* 键）和 scipy.sparse.save_npz 标准格式
+    """
+    加载邻接矩阵 .npz 文件
+    支持多种格式，避免pickle相关错误
+    """
+    print(f"加载邻接矩阵: {path}")
+    
+    # 方法1: 尝试标准scipy sparse格式（不使用pickle）
+    try:
+        adj = sp.load_npz(path).tocsr()
+        print(f"成功加载邻接矩阵，形状: {adj.shape}")
+        return adj
+    except Exception as e:
+        print(f"标准格式加载失败: {e}")
+    
+    # 方法2: 尝试手动构建sparse矩阵（不使用pickle）
+    try:
+        data = np.load(path, allow_pickle=False)
+        print(f"文件包含的键: {list(data.keys())}")
+        
+        if all(k in data for k in ['data', 'indices', 'indptr', 'shape']):
+            adj = sp.csr_matrix((data['data'], data['indices'], data['indptr']), 
+                               shape=tuple(data['shape']))
+            print(f"手动构建成功，形状: {adj.shape}")
+            return adj
+    except Exception as e:
+        print(f"手动构建失败: {e}")
+    
+    # 方法3: 最后尝试使用pickle（如果确实需要）
     try:
         data = np.load(path, allow_pickle=True)
+        print(f"使用pickle加载，文件包含的键: {list(data.keys())}")
+        
+        # 尝试DeepRobust格式
         if all(k in data for k in ['adj_data','adj_indices','adj_indptr','adj_shape']):
-            return sp.csr_matrix((data['adj_data'], data['adj_indices'], data['adj_indptr']),
+            adj = sp.csr_matrix((data['adj_data'], data['adj_indices'], data['adj_indptr']),
                                  shape=tuple(data['adj_shape']))
-    except Exception:
-        pass
-    return sp.load_npz(path).tocsr()
+            print(f"DeepRobust格式成功，形状: {adj.shape}")
+            return adj
+        
+        # 尝试标准格式
+        if all(k in data for k in ['data', 'indices', 'indptr', 'shape']):
+            adj = sp.csr_matrix((data['data'], data['indices'], data['indptr']), 
+                               shape=tuple(data['shape']))
+            print(f"pickle方式成功，形状: {adj.shape}")
+            return adj
+    except Exception as e:
+        print(f"pickle方式失败: {e}")
+    
+    raise RuntimeError(f"无法加载邻接矩阵: {path}, 尝试了所有可能的方法")
 
 def main():
     """使用EdgeFlipMAE进行边翻转检测的完整示例"""
     
     # 1. 加载数据
     print("=== 加载数据 ===")
-    clean_path = "../DeepRobust/examples/graph/tmp/cora.npz"  # 保持与数据集来源一致
+    clean_path = "../DeepRobust/examples/graph/tmp/pubmed.npz"  # 保持与数据集来源一致
     # 将 attacked_path 改为 test_mettack.py 实际保存的位置与命名
-    attacked_path = "../DeepRobust/examples/graph/tmp/cora_modified_005.npz"  # 例如 5% 对应 005；请按你的实际文件调整
+    attacked_path = "../DeepRobust/examples/graph/tmp/pubmed_modified_005.npz"  # 例如 5% 对应 005；请按你的实际文件调整
 
-    # 加载干净图和攻击图（兼容两种 npz 存储格式）
-    def load_adj_npz(path):
-        try:
-            # DeepRobust 数据打包格式（含 adj_* 键）
-            data = np.load(path, allow_pickle=True)
-            if all(k in data for k in ['adj_data','adj_indices','adj_indptr','adj_shape']):
-                adj = sp.csr_matrix((data['adj_data'], data['adj_indices'], data['adj_indptr']),
-                                    shape=tuple(data['adj_shape']))
-                return adj
-        except Exception:
-            pass
-        try:
-            # 标准 scipy.sparse.save_npz 格式
-            return sp.load_npz(path).tocsr()
-        except Exception as e:
-            raise RuntimeError(f"无法加载邻接矩阵: {path}, 错误: {e}")
+    # 加载干净图和攻击图（使用全局定义的 load_adj_npz 函数）
 
     from dataconstruction import load_prog_data, reduce_features_svd, construct_edge_diff_dataset
     import scipy.sparse as sp
@@ -78,7 +103,10 @@ def main():
     # 3. 构造三元组数据集
     print("\n=== 构造边翻转数据集 ===")
     edge_pairs, X_pairs, y = construct_edge_diff_dataset(
-        adj_clean, adj_attack, X_reduced, balance=True, random_state=42
+        adj_clean, adj_attack, X_reduced, 
+        balance=True, 
+        balance_strategy='min',  # 使用较小类别的样本数量，确保1:1比例
+        random_state=42
     )
     print(f"数据集大小: {len(y)}")
     print(f"正样本(翻转): {np.sum(y)}, 负样本(未翻转): {len(y) - np.sum(y)}")
@@ -97,7 +125,7 @@ def main():
     device_id = 0 if torch.cuda.is_available() else -1  # -1表示CPU，0表示GPU:0
     model = EdgeFlipMAE(
         gnn_type='GCN',
-        dataset_name='Cora_EdgeFlip',
+        dataset_name='PubMed_EdgeFlip',
         input_dim=X_reduced.shape[1],
         hid_dim=100,
         num_layer=2,
@@ -176,8 +204,8 @@ def load_and_predict_example():
     
     try:
         # 1) 重新准备图数据（与训练时一致的处理）
-        clean_path = "../DeepRobust/examples/graph/tmp/cora.npz"
-        attacked_path = "../DeepRobust/examples/graph/tmp/cora_modified_095.npz"
+        clean_path = "../DeepRobust/examples/graph/tmp/pubmed.npz"
+        attacked_path = "../DeepRobust/examples/graph/tmp/pubmed_modified_005.npz"
         
         # 加载干净图与特征；加载攻击图只用于构造示例边对（可选）
         adj_clean, features = load_prog_data(clean_path)
@@ -203,7 +231,7 @@ def load_and_predict_example():
         # 3) 重新创建模型结构（配置需与训练时一致）
         model = EdgeFlipMAE(
             gnn_type='GCN',
-            dataset_name='Cora_EdgeFlip',
+            dataset_name='PubMed_EdgeFlip',
             input_dim=100,
             hid_dim=64,
             num_layer=2,
@@ -211,8 +239,8 @@ def load_and_predict_example():
         )
         
         # 4) 加载预训练权重（与 save_model 保存的路径一致）
-        encoder_path = "./Experiment/pre_trained_model/Cora_EdgeFlip/EdgeFlipMAE.GCN.64hidden_dim.encoder.pth"
-        classifier_path = "./Experiment/pre_trained_model/Cora_EdgeFlip/EdgeFlipMAE.GCN.64hidden_dim.classifier.pth"
+        encoder_path = "./Experiment/pre_trained_model/Pubmed_EdgeFlip/EdgeFlipMAE.GCN.64hidden_dim.encoder.pth"
+        classifier_path = "./Experiment/pre_trained_model/Pubmed_EdgeFlip/EdgeFlipMAE.GCN.64hidden_dim.classifier.pth"
         model.load_model(encoder_path, classifier_path)
         
         # 5) 预测这些边是否被翻转

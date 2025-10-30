@@ -282,10 +282,10 @@ def main():
     
     
 
-    # 保存修改后的结构到当前目录（含数据集与比例信息）
-    #save_name = f'{args.dataset}_mod_adj_{int(args.ptb_rate*100):03d}'
-    #model.save_adj(root='./', name=save_name)
-    #model.save_features(root='./', name=f'{args.dataset}_mod_features')
+    #保存修改后的结构到当前目录（含数据集与比例信息）
+    save_name = f'{args.dataset}_mod_adj_{int(args.ptb_rate*100):03d}'
+    model.save_adj(root='./', name=save_name)
+    model.save_features(root='./', name=f'{args.dataset}_mod_features')
 
 if __name__ == '__main__':
     main()
