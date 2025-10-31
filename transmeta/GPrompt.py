@@ -46,6 +46,19 @@ class Gprompt(torch.nn.Module):
         adj_norm = D_mat_inv @ adj @ D_mat_inv
         return adj_norm
 
+    def load_best_prompt(self):
+        """加载最佳prompt状态"""
+        if hasattr(self, 'best_prompt_state') and self.best_prompt_state is not None:
+            self.weight.data = self.best_prompt_state.clone()
+            print(f"加载最佳prompt，最佳损失: {self.best_loss:.4f}")
+        else:
+            print("警告: 没有找到最佳prompt状态")
+    
+    def reset_best_prompt(self):
+        """重置最佳prompt记录"""
+        self.best_loss = float('inf')
+        self.best_prompt_state = None
+
 
     def train(self, train_graphs, attacker, surrogate, answering, optimizer, device='cuda', l2_reg=1e-4,
               budget_ratio=0.05,     # 预算比例，例如5%边可攻击
@@ -63,7 +76,12 @@ class Gprompt(torch.nn.Module):
         """
         total_loss = 0.0
         n_batches = 0
-        mu = torch.tensor(mu_init, device=device)  # 拉格朗日乘子 (非负标量)    
+        mu = torch.tensor(mu_init, device=device)  # 拉格朗日乘子 (非负标量)
+        
+        # 初始化最佳prompt保存
+        if not hasattr(self, 'best_loss'):
+            self.best_loss = float('inf')
+            self.best_prompt_state = None
 
         for batch in train_graphs:
             optimizer.zero_grad()
@@ -131,4 +149,13 @@ class Gprompt(torch.nn.Module):
             total_loss += loss.item()
             n_batches += 1
 
-        return total_loss / n_batches if n_batches > 0 else 0.0
+        # 计算平均损失
+        avg_loss = total_loss / n_batches if n_batches > 0 else 0.0
+        
+        # 保存最佳prompt状态
+        if avg_loss < self.best_loss:
+            self.best_loss = avg_loss
+            self.best_prompt_state = self.weight.clone().detach()
+            print(f"保存最佳prompt，损失: {avg_loss:.4f}")
+
+        return avg_loss

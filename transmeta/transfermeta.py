@@ -463,6 +463,10 @@ class Metattack(BaseMeta):
         best_prompt=GPF(100, attacker=attacker).to(self.device)
         # 执行攻击迭代
         print("开始攻击迭代...")
+        
+        # 重置最佳prompt记录
+        self.prompt.reset_best_prompt()
+        
         for i in tqdm(range(n_perturbations), desc="Perturbing graph"):
             print(f"攻击迭代 {i+1}/{n_perturbations}")
             
@@ -483,12 +487,10 @@ class Metattack(BaseMeta):
             # 训练提示
             loss = self.prompt.train(train_graphs, attacker, self.surrogate, self.answering, self.optimizer, self.device)
             print(f"提示训练损失: {loss:.4f}")
-            if min_loss == 0:
-                min_loss = loss
-            elif loss < min_loss:
-                min_loss = loss
-                best_prompt = self.prompt
-                
+            
+            # 加载最佳prompt用于final_attack
+            self.prompt.load_best_prompt()
+            
             # 计算元分数
             adj_meta_score = torch.tensor(0.0).to(self.device)
             feature_meta_score = torch.tensor(0.0).to(self.device)

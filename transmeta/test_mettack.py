@@ -33,7 +33,7 @@ parser.add_argument('--hidden', type=int, default=16,
 parser.add_argument('--dropout', type=float, default=0.5,
                     help='Dropout rate (1 - keep probability).')
 parser.add_argument('--dataset', type=str, default='cora', choices=['cora', 'cora_ml', 'citeseer', 'polblogs', 'pubmed'], help='dataset')
-parser.add_argument('--ptb_rate', type=float, default=0.05,  help='pertubation rate')
+parser.add_argument('--ptb_rate', type=float, default=0.10,  help='pertubation rate')
 parser.add_argument('--model', type=str, default='Meta-Self',
         choices=['Meta-Self', 'A-Meta-Self', 'Meta-Train', 'A-Meta-Train', 'E-Meta-Self'], help='model variant')
 
@@ -116,7 +116,7 @@ def main():
     # modified_features = model.modified_features
     print('=== testing GCN on modified graph ===')
     test(modified_adj)
-
+    print(test(adj)-test(modified_adj))
     # 如果要保存修改后的属性/功能，取消下面的代码注释
     model.save_adj(root='./', name=f'pubmed_mod_adj')
     model.save_features(root='./', name='mod_features')

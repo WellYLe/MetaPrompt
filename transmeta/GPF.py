@@ -33,7 +33,13 @@ class GPF(torch.nn.Module):
               mu_lr=1e-2):           # 乘子学习率
         """训练GPF提示"""
         total_loss = 0.0    
-        mu = torch.tensor(mu_init, device=device)  # 拉格朗日乘子 (非负标量)         
+        mu = torch.tensor(mu_init, device=device)  # 拉格朗日乘子 (非负标量)
+        
+        # 初始化最佳prompt保存
+        if not hasattr(self, 'best_loss'):
+            self.best_loss = float('inf')
+            self.best_prompt_state = None
+            
         for batch in train_graphs:  
             optimizer.zero_grad() 
             batch = batch.to(device)
@@ -106,8 +112,17 @@ class GPF(torch.nn.Module):
             with torch.no_grad():
                 mu = torch.clamp(mu + mu_lr * g, min=0.0)
             total_loss += loss.item()  
+        
+        # 计算平均损失
+        avg_loss = total_loss / len(train_graphs) if len(train_graphs) > 0 else 0.0
+        
+        # 保存最佳prompt状态
+        if avg_loss < self.best_loss:
+            self.best_loss = avg_loss
+            self.best_prompt_state = self.global_emb.clone().detach()
+            print(f"保存最佳prompt，损失: {avg_loss:.4f}")
             
-        return total_loss / len(train_graphs) if len(train_graphs) > 0 else 0.0
+        return avg_loss
     
     def _normalize_adj(self, adj):
         """归一化邻接矩阵"""
@@ -118,6 +133,19 @@ class GPF(torch.nn.Module):
         D_mat_inv = torch.diag(D_inv)
         adj_norm = D_mat_inv @ adj @ D_mat_inv
         return adj_norm 
+    
+    def load_best_prompt(self):
+        """加载最佳prompt状态"""
+        if hasattr(self, 'best_prompt_state') and self.best_prompt_state is not None:
+            self.global_emb.data = self.best_prompt_state.clone()
+            print(f"加载最佳prompt，最佳损失: {self.best_loss:.4f}")
+        else:
+            print("警告: 没有找到最佳prompt状态")
+    
+    def reset_best_prompt(self):
+        """重置最佳prompt记录"""
+        self.best_loss = float('inf')
+        self.best_prompt_state = None 
     
     
 class GPF_plus(torch.nn.Module): 
@@ -178,7 +206,13 @@ class GPF_plus(torch.nn.Module):
         与GPF的区别在于：这里每个节点都有自己组合出来的prompt p，而不是全局共享的global_emb
         """
         total_loss = 0.0
-        mu = torch.tensor(mu_init, device=device)  # 拉格朗日乘子 (非负标量)  
+        mu = torch.tensor(mu_init, device=device)  # 拉格朗日乘子 (非负标量)
+        
+        # 初始化最佳prompt保存
+        if not hasattr(self, 'best_loss'):
+            self.best_loss = float('inf')
+            self.best_prompt_state = None
+            
         for batch in train_graphs:
             optimizer.zero_grad()
             batch = batch.to(device)
@@ -240,4 +274,42 @@ class GPF_plus(torch.nn.Module):
                 mu = torch.clamp(mu + mu_lr * g, min=0.0)
             total_loss += loss.item()
 
-        return total_loss / len(train_graphs) if len(train_graphs) > 0 else 0.0
+        # 计算平均损失
+        avg_loss = total_loss / len(train_graphs) if len(train_graphs) > 0 else 0.0
+        
+        def load_best_prompt(self):
+            """加载最佳prompt状态"""
+            if hasattr(self, 'best_prompt_state') and self.best_prompt_state is not None:
+                self.p_list.data = self.best_prompt_state['p_list'].clone()
+                self.a.weight.data = self.best_prompt_state['a_weight'].clone()
+                if self.best_prompt_state['a_bias'] is not None:
+                    self.a.bias.data = self.best_prompt_state['a_bias'].clone()
+                
+                if self.projection is not None and 'projection_weight' in self.best_prompt_state:
+                    self.projection.weight.data = self.best_prompt_state['projection_weight'].clone()
+                    if self.best_prompt_state['projection_bias'] is not None:
+                        self.projection.bias.data = self.best_prompt_state['projection_bias'].clone()
+                print(f"加载最佳prompt，最佳损失: {self.best_loss:.4f}")
+            else:
+                print("警告: 没有找到最佳prompt状态")
+        
+        def reset_best_prompt(self):
+            """重置最佳prompt记录"""
+            self.best_loss = float('inf')
+            self.best_prompt_state = None
+            
+        # 保存最佳prompt状态
+        if avg_loss < self.best_loss:
+            self.best_loss = avg_loss
+            # 保存所有prompt相关参数
+            self.best_prompt_state = {
+                'p_list': self.p_list.clone().detach(),
+                'a_weight': self.a.weight.clone().detach(),
+                'a_bias': self.a.bias.clone().detach() if self.a.bias is not None else None
+            }
+            if self.projection is not None:
+                self.best_prompt_state['projection_weight'] = self.projection.weight.clone().detach()
+                self.best_prompt_state['projection_bias'] = self.projection.bias.clone().detach() if self.projection.bias is not None else None
+            print(f"保存最佳prompt，损失: {avg_loss:.4f}")
+
+        return avg_loss

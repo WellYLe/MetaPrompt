@@ -96,6 +96,21 @@ class GPPTPrompt(torch.nn.Module):
     
     def get_mid_h(self):
         return self.fea
+    
+    def load_best_prompt(self):
+        """加载最佳prompt状态"""
+        if hasattr(self, 'best_prompt_state') and self.best_prompt_state is not None:
+            self.StructureToken.weight.data = self.best_prompt_state['structure_weight'].clone()
+            for i, task_token in enumerate(self.TaskToken):
+                task_token.weight.data = self.best_prompt_state['task_weights'][i].clone()
+            print(f"加载最佳prompt，最佳损失: {self.best_loss:.4f}")
+        else:
+            print("警告: 没有找到最佳prompt状态")
+    
+    def reset_best_prompt(self):
+        """重置最佳prompt记录"""
+        self.best_loss = float('inf')
+        self.best_prompt_state = None
 
     def forward(self, h, edge_index):       
         device = h.device
@@ -169,59 +184,84 @@ def kmeans(X, num_clusters, distance='euclidean', device='cuda', max_iter=100, t
 # # Example usage
 # h = torch.randn(160000, 128).to('cuda')
 # cluster_ids_x, cluster_centers = kmeans(X=h, num_clusters=10, distance='euclidean', device='cuda')
-def train(self, train_graphs, attacker, surrogate, answering, optimizer, device='cuda',
+    def train(self, train_graphs, attacker, surrogate, answering, optimizer, device='cuda',
               budget_ratio=0.05,     # 预算比例，例如5%边可攻击
               mu_init=0.0,           # 初始乘子
               mu_lr=1e-2):
-    total_loss = 0.0
-    mu = torch.tensor(mu_init, device=device)  # 拉格朗日乘子 (非负标量)  
-    for batch in train_graphs:
-        optimizer.zero_grad()
-        batch = batch.to(device)
-
-        feature, edge_index = batch.x, batch.edge_index
-        graph_data = Data(x=feature, edge_index=edge_index)
-
-        # 预测扰动概率
-        flip_probs = attacker.predict_all_edges(graph_data)
-
-        # 获得节点嵌入
-        node_emb = attacker.encoder(feature, edge_index)
-
-        # GPPT动态提示传播
-        prompted_emb = self.prompt_transformer(node_emb, edge_index)
-
-        # 软扰动邻接矩阵
-        num_nodes = feature.shape[0]
-        adj = torch.zeros(num_nodes, num_nodes, device=device)
-        adj[edge_index[0], edge_index[1]] = 1.0
-        flip_probs_tensor = torch.tensor(flip_probs, device=device)
-        edge_probs_matrix = torch.zeros_like(adj)
-        edge_probs_matrix[edge_index[0], edge_index[1]] = flip_probs_tensor
-        perturbed_adj = adj * (1 - edge_probs_matrix) + (1 - adj) * edge_probs_matrix
-        adj_norm = self._normalize_adj(perturbed_adj)
-
-        # 代理模型预测 + 答案生成
-        surrogate_out = surrogate(prompted_emb, adj_norm)
-        final_out = answering(surrogate_out)
-
-        # 损失计算
-        if hasattr(batch, 'y'):
-            criterion = nn.CrossEntropyLoss()
-            loss = criterion(final_out, batch.y)
-            # --- 拉格朗日预算约束 ---
-            num_edges = edge_index.size(1)
-            budget = budget_ratio * num_edges  # 允许攻击的期望边数
-            g = flip_probs_tensor.sum() - budget   # 约束项：sum(p) - B
-            budget_loss = mu * g                   # 拉格朗日项 μ * g
-            loss.backward()
-            optimizer.step()
-            # --- 更新拉格朗日乘子 ---
-            with torch.no_grad():
-                mu = torch.clamp(mu + mu_lr * g, min=0.0)
-            total_loss += loss.item()
-        else:
-            print("Warning: missing labels, skip batch")
-            continue
-
-    return total_loss / len(train_graphs)
+        total_loss = 0.0
+        mu = torch.tensor(mu_init, device=device)  # 拉格朗日乘子 (非负标量)  
+        for batch in train_graphs:
+            optimizer.zero_grad()
+            batch = batch.to(device)
+    
+            feature, edge_index = batch.x, batch.edge_index
+            graph_data = Data(x=feature, edge_index=edge_index)
+    
+            # 预测扰动概率
+            flip_probs = attacker.predict_all_edges(graph_data)
+    
+            # 获得节点嵌入
+            node_emb = attacker.encoder(feature, edge_index)
+    
+            # GPPT动态提示传播
+            prompted_emb = self.prompt_transformer(node_emb, edge_index)
+    
+            # 软扰动邻接矩阵
+            num_nodes = feature.shape[0]
+            adj = torch.zeros(num_nodes, num_nodes, device=device)
+            adj[edge_index[0], edge_index[1]] = 1.0
+            flip_probs_tensor = torch.tensor(flip_probs, device=device)
+            edge_probs_matrix = torch.zeros_like(adj)
+            edge_probs_matrix[edge_index[0], edge_index[1]] = flip_probs_tensor
+            perturbed_adj = adj * (1 - edge_probs_matrix) + (1 - adj) * edge_probs_matrix
+            adj_norm = self._normalize_adj(perturbed_adj)
+    
+            # 代理模型预测 + 答案生成
+            surrogate_out = surrogate(prompted_emb, adj_norm)
+            final_out = answering(surrogate_out)
+    
+            # 损失计算
+            if hasattr(batch, 'y'):
+                criterion = nn.CrossEntropyLoss()
+                loss = criterion(final_out, batch.y)
+                # --- 拉格朗日预算约束 ---
+                num_edges = edge_index.size(1)
+                budget = budget_ratio * num_edges  # 允许攻击的期望边数
+                g = flip_probs_tensor.sum() - budget   # 约束项：sum(p) - B
+                budget_loss = mu * g                   # 拉格朗日项 μ * g
+                
+                # --- 总损失 ---
+                loss = loss + budget_loss
+                loss.backward()
+                optimizer.step()
+                # --- 更新拉格朗日乘子 ---
+                with torch.no_grad():
+                    mu = torch.clamp(mu + mu_lr * g, min=0.0)
+                total_loss += loss.item()
+            else:
+                print("Warning: missing labels, skip batch")
+                continue
+    
+        # 计算平均损失
+        avg_loss = total_loss / len(train_graphs) if len(train_graphs) > 0 else 0.0
+        
+        # 保存最佳prompt状态
+        if not hasattr(self, 'best_loss') or avg_loss < self.best_loss:
+            self.best_loss = avg_loss
+            self.best_prompt_state = {
+                'structure_weight': self.StructureToken.weight.clone().detach(),
+                'task_weights': [task_token.weight.clone().detach() for task_token in self.TaskToken]
+            }
+            print(f"保存最佳prompt，损失: {avg_loss:.4f}")
+    
+        return avg_loss
+    
+    def _normalize_adj(self, adj):
+        """归一化邻接矩阵"""
+        adj = adj + torch.eye(adj.shape[0], device=adj.device)
+        D = torch.sum(adj, dim=1)
+        D_inv = torch.pow(D, -0.5)
+        D_inv[torch.isinf(D_inv)] = 0.
+        D_mat_inv = torch.diag(D_inv)
+        adj_norm = D_mat_inv @ adj @ D_mat_inv
+        return adj_norm
