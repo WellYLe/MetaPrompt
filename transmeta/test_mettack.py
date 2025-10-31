@@ -108,6 +108,7 @@ def main():
     #     target_nodes = idx_unlabeled
     #     model.attack(features, adj, labels, target_nodes, n_perturbations=perturbations, targeted=False)
     # else:
+
     model.attack(features, adj, labels, idx_train, idx_unlabeled, perturbations, ll_constraint=False)
     print('=== testing GCN on original(clean) graph ===')
     test(adj)

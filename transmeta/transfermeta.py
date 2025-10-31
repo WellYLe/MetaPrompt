@@ -459,7 +459,8 @@ class Metattack(BaseMeta):
         
         # 初始化优化器
         self.initialize_optimizer()
-        
+        min_loss = 0
+        best_prompt=GPF(100, attacker=attacker).to(self.device)
         # 执行攻击迭代
         print("开始攻击迭代...")
         for i in tqdm(range(n_perturbations), desc="Perturbing graph"):
@@ -482,7 +483,12 @@ class Metattack(BaseMeta):
             # 训练提示
             loss = self.prompt.train(train_graphs, attacker, self.surrogate, self.answering, self.optimizer, self.device)
             print(f"提示训练损失: {loss:.4f}")
-            
+            if min_loss == 0:
+                min_loss = loss
+            elif loss < min_loss:
+                min_loss = loss
+                best_prompt = self.prompt
+                
             # 计算元分数
             adj_meta_score = torch.tensor(0.0).to(self.device)
             feature_meta_score = torch.tensor(0.0).to(self.device)
@@ -516,12 +522,59 @@ class Metattack(BaseMeta):
                 self.feature_changes.data[row_idx][col_idx] += (-2 * modified_features[row_idx][col_idx] + 1)
                 print(f"扰动节点 {row_idx} 的特征 {col_idx}")
 
+        
+        
         # 保存最终结果
         if self.attack_structure:
             self.modified_adj = self.get_modified_adj(ori_adj).detach()
         if self.attack_features:
             self.modified_features = self.get_modified_features(ori_features).detach()
+        # adj_meta_score = attacker.final_attack(best_prompt,  modified_adj, modified_features, graph_data)
+        # # 根据 adj_meta_score 翻转 ptb_rate 的边
+        # if self.attack_structure:
+        #     # 计算需要翻转的边数量
+        #     ptb_rate = n_perturbations / (adj.sum() // 2)
+        #     n_total_edges = int((ori_adj.sum() / 2).item()) if self.undirected else int(ori_adj.sum().item())
+        #     n_flips = int(ptb_rate * n_total_edges)
             
+        #     # 获取 adj_meta_score 的上三角（无向图）或全矩阵（有向图）
+        #     if self.undirected:
+        #         adj_scores = torch.triu(adj_meta_score, diagonal=1)
+        #         ori_adj_triu = torch.triu(ori_adj, diagonal=1)
+        #     else:
+        #         adj_scores = adj_meta_score.clone()
+        #         ori_adj_triu = ori_adj.clone()
+            
+        #     # 展平分数矩阵
+        #     flat_scores = adj_scores.view(-1)
+        #     flat_ori = ori_adj_triu.view(-1)
+            
+        #     # 获取所有可能的边索引
+        #     if self.undirected:
+        #         possible_edges = torch.triu_indices(ori_adj.shape[0], ori_adj.shape[1], offset=1, device=self.device)
+        #     else:
+        #         possible_edges = torch.stack(torch.meshgrid(torch.arange(ori_adj.shape[0], device=self.device),
+        #                                                    torch.arange(ori_adj.shape[1], device=self.device)), dim=0)
+        #         possible_edges = possible_edges.reshape(2, -1)
+            
+        #     # 按分数从高到低排序
+        #     sorted_indices = torch.argsort(flat_scores, descending=True)
+            
+        #     # 选择前 n_flips 条边进行翻转
+        #     flip_indices = sorted_indices[:n_flips]
+            
+        #     # 创建修改后的邻接矩阵
+        #     modified_adj = ori_adj.clone()
+        #     for idx in flip_indices:
+        #         if self.undirected:
+        #             i, j = possible_edges[0, idx], possible_edges[1, idx]
+        #             modified_adj[i, j] = 1 - modified_adj[i, j]
+        #             modified_adj[j, i] = modified_adj[i, j]  # 保持对称
+        #         else:
+        #             i, j = possible_edges[0, idx], possible_edges[1, idx]
+        #             modified_adj[i, j] = 1 - modified_adj[i, j]
+            
+        #     self.modified_adj = modified_adj
         print("攻击完成!")
         return self.modified_adj if self.attack_structure else ori_adj, \
                self.modified_features if self.attack_features else ori_features
