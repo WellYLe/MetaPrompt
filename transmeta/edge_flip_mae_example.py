@@ -130,11 +130,11 @@ def main():
         hid_dim=100,
         num_layer=2,
         device=device_id,  # 传递整数而不是torch.device对象
-        mask_rate=0.15,
-        noise_rate=0.1,
+        mask_rate=0.3,
+        noise_rate=0.15,
         learning_rate=0.001,
-        weight_decay=5e-4,
-        epochs=100
+        weight_decay=1e-4,
+        epochs=200
     )
     
     # 6. 加载训练数据

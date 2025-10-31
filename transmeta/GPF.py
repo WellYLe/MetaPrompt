@@ -28,9 +28,9 @@ class GPF(torch.nn.Module):
         return x + self.global_emb
     
     def train(self, train_graphs, attacker, surrogate, answering, optimizer, device='cuda',
-              budget_ratio=0.05,     # 预算比例，例如5%边可攻击
+              budget_ratio=0.50,     # 预算比例，例如5%边可攻击
               mu_init=0.0,           # 初始乘子
-              mu_lr=1e-2):           # 乘子学习率
+              mu_lr=1e-3):           # 乘子学习率
         """训练GPF提示"""
         total_loss = 0.0    
         mu = torch.tensor(mu_init, device=device)  # 拉格朗日乘子 (非负标量)

@@ -1,0 +1,89 @@
+{
+  "experiment_config": {
+    "dataset": "cora",
+    "model": "Meta-Self",
+    "perturbation_rate": 0.1,
+    "num_perturbations": 506,
+    "num_attacks": 10
+  },
+  "summary": {
+    "original_accuracy": 0.8309859154929577,
+    "mean_attacked_accuracy": 0.8140845070422535,
+    "std_attacked_accuracy": 0.0047358560547041476,
+    "mean_accuracy_drop": 0.016901408450704238,
+    "std_accuracy_drop": 0.0047358560547041476,
+    "attack_success_rate": 1.0
+  },
+  "detailed_results": [
+    {
+      "attack_id": 1,
+      "original_acc": 0.8309859154929577,
+      "attacked_acc": 0.8063380281690141,
+      "acc_drop": 0.02464788732394363,
+      "perturbations": 506
+    },
+    {
+      "attack_id": 2,
+      "original_acc": 0.8309859154929577,
+      "attacked_acc": 0.8199195171026157,
+      "acc_drop": 0.01106639839034207,
+      "perturbations": 506
+    },
+    {
+      "attack_id": 3,
+      "original_acc": 0.8309859154929577,
+      "attacked_acc": 0.8108651911468813,
+      "acc_drop": 0.02012072434607648,
+      "perturbations": 506
+    },
+    {
+      "attack_id": 4,
+      "original_acc": 0.8309859154929577,
+      "attacked_acc": 0.8143863179074446,
+      "acc_drop": 0.016599597585513104,
+      "perturbations": 506
+    },
+    {
+      "attack_id": 5,
+      "original_acc": 0.8309859154929577,
+      "attacked_acc": 0.8199195171026157,
+      "acc_drop": 0.01106639839034207,
+      "perturbations": 506
+    },
+    {
+      "attack_id": 6,
+      "original_acc": 0.8309859154929577,
+      "attacked_acc": 0.8103621730382293,
+      "acc_drop": 0.020623742454728422,
+      "perturbations": 506
+    },
+    {
+      "attack_id": 7,
+      "original_acc": 0.8309859154929577,
+      "attacked_acc": 0.8219315895372233,
+      "acc_drop": 0.00905432595573441,
+      "perturbations": 506
+    },
+    {
+      "attack_id": 8,
+      "original_acc": 0.8309859154929577,
+      "attacked_acc": 0.8113682092555332,
+      "acc_drop": 0.019617706237424537,
+      "perturbations": 506
+    },
+    {
+      "attack_id": 9,
+      "original_acc": 0.8309859154929577,
+      "attacked_acc": 0.8128772635814889,
+      "acc_drop": 0.01810865191146882,
+      "perturbations": 506
+    },
+    {
+      "attack_id": 10,
+      "original_acc": 0.8309859154929577,
+      "attacked_acc": 0.8128772635814889,
+      "acc_drop": 0.01810865191146882,
+      "perturbations": 506
+    }
+  ]
+}

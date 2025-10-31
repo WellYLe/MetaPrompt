@@ -331,7 +331,7 @@ class Metattack(BaseMeta):
         from dataconstruction import reduce_features_svd
         print("对特征进行SVD降维...")
         features_dense = features.toarray() if hasattr(features, 'toarray') else features
-        ori_features_reduced, svd_model = reduce_features_svd(features_dense, n_components=100, random_state=42)
+        ori_features_reduced, svd_model = reduce_features_svd(features_dense, n_components=100, random_state=3407)
         print(f"特征维度从 {features_dense.shape[1]} 降维到 {ori_features_reduced.shape[1]}")
         
         # 更新ori_features为降维后的特征
@@ -349,7 +349,7 @@ class Metattack(BaseMeta):
         graph_data = Data(x=x, edge_index=edge_index, y=y)
         
         # 调用图分割函数
-        train_graphs = partition_graph_equal(graph_data, num_parts=8, shuffle=True, seed=0)
+        train_graphs = partition_graph_equal2(graph_data, num_parts=8, shuffle=True, seed=0)
         
         # 转换为张量
         self.sparse_features = sp.issparse(ori_features)
@@ -357,9 +357,9 @@ class Metattack(BaseMeta):
         # 在转换为张量之前进行SVD降维
         print("对特征进行SVD降维到100维...")
         if sp.issparse(ori_features):
-            features_reduced, self.svd_model = reduce_features_svd(ori_features, n_components=100, random_state=42, do_scale=True)
+            features_reduced, self.svd_model = reduce_features_svd(ori_features, n_components=100, random_state=3407, do_scale=True)
         else:
-            features_reduced, self.svd_model = reduce_features_svd(ori_features, n_components=100, random_state=42, do_scale=True)
+            features_reduced, self.svd_model = reduce_features_svd(ori_features, n_components=100, random_state=3407, do_scale=True)
         
         print(f"特征维度从 {ori_features.shape[1]} 降维到 {features_reduced.shape[1]}")
         
