@@ -552,7 +552,7 @@ class EdgeFlipMAE(PreTrain):
         M = torch.tensor(M_numpy, dtype=torch.float32, device=device)
         
         # 计算最终的邻接矩阵
-        M = modified_adj * (torch.ones_like(modified_adj) - M) + (torch.ones_like(modified_adj) - modified_adj) * M
+        #M = modified_adj * (torch.ones_like(modified_adj) - M) + (torch.ones_like(modified_adj) - modified_adj) * M
         
         return M
 

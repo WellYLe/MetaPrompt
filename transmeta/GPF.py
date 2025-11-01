@@ -28,9 +28,11 @@ class GPF(torch.nn.Module):
         return x + self.global_emb
     
     def train(self, train_graphs, attacker, surrogate, answering, optimizer, device='cuda',
-              budget_ratio=0.50,     # 预算比例，例如5%边可攻击
-              mu_init=0.0,           # 初始乘子
-              mu_lr=1e-3):           # 乘子学习率
+              budget_ratio=0.10,     # 预算比例，例如5%边可攻击
+              mu_init=0.1,           # 初始乘子
+              mu_lr=1e-3 ):          # 乘子学习率
+      
+
         """训练GPF提示"""
         total_loss = 0.0    
         mu = torch.tensor(mu_init, device=device)  # 拉格朗日乘子 (非负标量)
@@ -39,7 +41,7 @@ class GPF(torch.nn.Module):
         if not hasattr(self, 'best_loss'):
             self.best_loss = float('inf')
             self.best_prompt_state = None
-            
+        
         for batch in train_graphs:  
             optimizer.zero_grad() 
             batch = batch.to(device)
@@ -87,17 +89,29 @@ class GPF(torch.nn.Module):
             adj_norm = self._normalize_adj(perturbed_adj)
             
             # 通过代理模型预测
+
             surrogate_output = surrogate(prompted_embeddings, adj_norm)
             final_output = answering(surrogate_output)
             
-            # 计算损失（这里需要真实标签，假设batch.y存在）
+            # 计算对抗攻击损失
+            # 目标：最大化代理模型在扰动图上的预测损失
             if hasattr(batch, 'y'):
+                # 有真实标签时，直接使用真实标签计算对抗损失
+                # 目标：让扰动图上的预测尽可能偏离真实标签
                 criterion = nn.CrossEntropyLoss()
-                loss = criterion(final_output, batch.y)
+                loss = -criterion(final_output, batch.y)  # 负号表示最大化损失（对抗目标）
             else:
-                # 如果没有标签，可以使用自监督损失或跳过
-                print("警告: batch缺少标签信息")
-                continue
+                # 如果没有标签，使用自监督对抗损失
+                # 最大化扰动前后预测的差异
+                #print("无标签")
+                clean_adj_norm = self._normalize_adj(adj_matrix)
+                clean_output = surrogate(prompted_embeddings, clean_adj_norm)
+                clean_final = answering(clean_output)
+                
+                criterion = nn.MSELoss()
+                #criterion = nn.CrossEntropyLoss()
+                loss = -criterion(final_output, clean_final.detach())
+
             # --- 拉格朗日预算约束 ---
             num_edges = edge_index.size(1)
             budget = budget_ratio * num_edges  # 允许攻击的期望边数
@@ -112,6 +126,7 @@ class GPF(torch.nn.Module):
             with torch.no_grad():
                 mu = torch.clamp(mu + mu_lr * g, min=0.0)
             total_loss += loss.item()  
+            
         
         # 计算平均损失
         avg_loss = total_loss / len(train_graphs) if len(train_graphs) > 0 else 0.0

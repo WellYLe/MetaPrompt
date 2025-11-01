@@ -349,7 +349,7 @@ class Metattack(BaseMeta):
         graph_data = Data(x=x, edge_index=edge_index, y=y)
         
         # 调用图分割函数
-        train_graphs = partition_graph_equal2(graph_data, num_parts=8, shuffle=True, seed=0)
+        train_graphs = partition_graph_equal(graph_data, num_parts=8, shuffle=True, seed=42)
         
         # 转换为张量
         self.sparse_features = sp.issparse(ori_features)
@@ -387,7 +387,7 @@ class Metattack(BaseMeta):
             y=labels,
             learning_rate=0.01,
             weight_decay=5e-4,
-            epochs=200,
+            epochs=1000,
             verbose=True,
             patience=10
         )

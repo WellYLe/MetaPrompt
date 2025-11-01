@@ -7,82 +7,82 @@
     "num_attacks": 10
   },
   "summary": {
-    "original_accuracy": 0.8309859154929577,
-    "mean_attacked_accuracy": 0.8140845070422535,
-    "std_attacked_accuracy": 0.0047358560547041476,
-    "mean_accuracy_drop": 0.016901408450704238,
-    "std_accuracy_drop": 0.0047358560547041476,
+    "original_accuracy": 0.829476861167002,
+    "mean_attacked_accuracy": 0.8088028169014085,
+    "std_attacked_accuracy": 0.003957253403464166,
+    "mean_accuracy_drop": 0.020674044265593584,
+    "std_accuracy_drop": 0.003957253403464166,
     "attack_success_rate": 1.0
   },
   "detailed_results": [
     {
       "attack_id": 1,
-      "original_acc": 0.8309859154929577,
-      "attacked_acc": 0.8063380281690141,
-      "acc_drop": 0.02464788732394363,
+      "original_acc": 0.829476861167002,
+      "attacked_acc": 0.8053319919517102,
+      "acc_drop": 0.024144869215291798,
       "perturbations": 506
     },
     {
       "attack_id": 2,
-      "original_acc": 0.8309859154929577,
-      "attacked_acc": 0.8199195171026157,
-      "acc_drop": 0.01106639839034207,
+      "original_acc": 0.829476861167002,
+      "attacked_acc": 0.8138832997987927,
+      "acc_drop": 0.01559356136820933,
       "perturbations": 506
     },
     {
       "attack_id": 3,
-      "original_acc": 0.8309859154929577,
-      "attacked_acc": 0.8108651911468813,
-      "acc_drop": 0.02012072434607648,
+      "original_acc": 0.829476861167002,
+      "attacked_acc": 0.8118712273641852,
+      "acc_drop": 0.017605633802816878,
       "perturbations": 506
     },
     {
       "attack_id": 4,
-      "original_acc": 0.8309859154929577,
-      "attacked_acc": 0.8143863179074446,
-      "acc_drop": 0.016599597585513104,
+      "original_acc": 0.829476861167002,
+      "attacked_acc": 0.8038229376257545,
+      "acc_drop": 0.025653923541247514,
       "perturbations": 506
     },
     {
       "attack_id": 5,
-      "original_acc": 0.8309859154929577,
-      "attacked_acc": 0.8199195171026157,
-      "acc_drop": 0.01106639839034207,
+      "original_acc": 0.829476861167002,
+      "attacked_acc": 0.8063380281690141,
+      "acc_drop": 0.023138832997987913,
       "perturbations": 506
     },
     {
       "attack_id": 6,
-      "original_acc": 0.8309859154929577,
-      "attacked_acc": 0.8103621730382293,
-      "acc_drop": 0.020623742454728422,
+      "original_acc": 0.829476861167002,
+      "attacked_acc": 0.8118712273641852,
+      "acc_drop": 0.017605633802816878,
       "perturbations": 506
     },
     {
       "attack_id": 7,
-      "original_acc": 0.8309859154929577,
-      "attacked_acc": 0.8219315895372233,
-      "acc_drop": 0.00905432595573441,
+      "original_acc": 0.829476861167002,
+      "attacked_acc": 0.8138832997987927,
+      "acc_drop": 0.01559356136820933,
       "perturbations": 506
     },
     {
       "attack_id": 8,
-      "original_acc": 0.8309859154929577,
-      "attacked_acc": 0.8113682092555332,
-      "acc_drop": 0.019617706237424537,
+      "original_acc": 0.829476861167002,
+      "attacked_acc": 0.8088531187122736,
+      "acc_drop": 0.020623742454728422,
       "perturbations": 506
     },
     {
       "attack_id": 9,
-      "original_acc": 0.8309859154929577,
-      "attacked_acc": 0.8128772635814889,
-      "acc_drop": 0.01810865191146882,
+      "original_acc": 0.829476861167002,
+      "attacked_acc": 0.8098591549295775,
+      "acc_drop": 0.019617706237424537,
       "perturbations": 506
     },
     {
       "attack_id": 10,
-      "original_acc": 0.8309859154929577,
-      "attacked_acc": 0.8128772635814889,
-      "acc_drop": 0.01810865191146882,
+      "original_acc": 0.829476861167002,
+      "attacked_acc": 0.8023138832997988,
+      "acc_drop": 0.02716297786720323,
       "perturbations": 506
     }
   ]
